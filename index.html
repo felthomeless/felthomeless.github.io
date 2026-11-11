@@ -56,7 +56,7 @@
           <img src="previews/dots.zip.png" alt="">
         </li>
         <li>
-          <a href="index.html" download>website files c</a> <small>(website sourcecode)</small>
+          <span class="link" onclick="downloadBoth()">website files c</span> <small>(website sourcecode: index.html + style.css)</small>
         </li>
       </ul>
     </section>
@@ -78,6 +78,17 @@
 function show(id) {
   document.querySelectorAll("section").forEach(function (s) {
     s.hidden = s.id !== id;
+  });
+}
+
+function downloadBoth() {
+  ["index.html", "style.css"].forEach(function (f) {
+    var a = document.createElement("a");
+    a.href = f;
+    a.download = f;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
   });
 }
 </script>
