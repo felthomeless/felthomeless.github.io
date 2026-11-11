@@ -1,0 +1,2255 @@
+#!/bin/sh
+
+CHROOT_DIR="${CHROOT_DIR:-$HOME/glibc}"
+GAMES_DIR="${GAMES_DIR:-$HOME/}"
+SELF="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+if [ -z "$1" ] && [ ! -t 1 ]; then
+for t in "${TERMINAL:-}" urxvt xterm st alacritty; do
+[ -n "$t" ] && command -v "$t" >/dev/null 2>&1 && exec "$t" -e sh "$SELF"
+done
+exit 1
+fi
+printf '\033[38;2;185;174;220m\033[0m'
+
+ui=1
+art=1
+base="${HOME:-/root}/.mfcore"
+tmp="$base/tmp"
+mkdir -p "$tmp" 2>/dev/null
+[ -s "$base/chroot" ] && CHROOT_DIR=$(cat "$base/chroot")
+RYZEN_W=""   # battery saver: cpu watt limit (ryzenadj), e.g. 8. empty = leave ryzenadj alone
+KSRC=""      # kernel source folder. empty = newest /usr/src/linux*
+DEVICES="bluetooth sound camera ethernet wifi cardreader fingerprint"
+
+if [ "$(id -u)" -eq 0 ]; then SUDO=""; else SUDO="sudo"; fi
+
+clear() { printf '\033[H\033[2J'; }
+pause() { printf 'press enter... '; read -r _; }
+ask() { printf '%s [y/n]: ' "$1"; read -r a; [ "$a" = y ]; }
+
+# one key with a timeout in tenths of a second (works in any sh)
+readkey() {
+key=""
+rk_old=$(stty -g 2>/dev/null) || { sleep 1; return 0; }
+stty -icanon -echo min 0 time "$1" 2>/dev/null
+key=$(dd bs=1 count=1 2>/dev/null)
+stty "$rk_old" 2>/dev/null
+}
+
+trap 'stty sane 2>/dev/null' EXIT
+
+# ---- layer stack: b goes back to the layer you came from ----
+screen=main
+stack=""
+go() { stack="$stack $screen"; screen=$1; }
+back() {
+set -- $stack; new=""
+[ $# -eq 0 ] && { screen=main; return; }
+while [ $# -gt 1 ]; do new="$new $1"; shift; done
+screen=$1; stack=$new
+}
+
+elevate() {
+if [ -z "$SUDO" ]; then echo "you are root already"; pause; return; fi
+sudo -v && echo "sudo unlocked for a few minutes"
+pause
+}
+
+show_menu() {
+clear
+cat << 'EOF'
+                                    layer 00
+ ## ##  ##   ###   ###    ##
+ #####      ## ##  # #    ##
+  ###   ##  ##     ##   ####
+ #####  ##  #      ###  ####
+           fetch    f
+────────────────────┘
+           chmod    c
+────────────────────┘
+           shell    s
+────────────────────┘
+           chroot   r
+────────────────────┘
+           taskmg   l
+────────────────────┘
+           layer01  m
+────────────────────┘
+
+EOF
+}
+
+# ---------- helpers ----------
+
+shell() {
+while true; do
+${SHELL:-/bin/sh}
+printf "\npress b to return to menu: "
+read -r choice
+[ "$choice" = "b" ] && break
+done
+}
+
+waitback() {
+read -r k
+[ -z "$k" ] && return 1
+[ "$k" = "b" ] && return 1
+return 0
+}
+
+calc() {
+while true; do
+  printf 'calc> '
+  read -r a op b
+  [ -z "$a" ] && break
+  case "$op" in
+    +|-|\*|/) ;;
+    *) echo "invalid operator"; continue ;;
+  esac
+  echo "scale=3; $a $op $b" | bc -l
+done
+}
+
+refresh() {
+  exec sh "$SELF"
+}
+
+readme() {
+echo
+echo WALLPAPERS
+echo for wall change you need feh installed
+echo make a folder named .wallpapers with your wallpapers for it to work or change path in here
+echo DISPLAY
+echo for openrc and other systems install elogind package for display off support
+echo balblalblalblabllalbllb AAAaaa
+echo END
+  waitback || return
+}
+
+wallpaper() {
+  f=$(ls "$HOME/.wallpapers" | shuf -n1)
+  feh --bg-scale "$HOME/.wallpapers/$f"
+}
+
+wallpaperS() {
+  f=$(ls "$HOME/.wallpapers" | shuf -n1)
+  feh --bg-scale "$HOME/.wallpapers/$f"
+}
+
+display() {
+  xset dpms force off
+}
+
+do_sleep() {
+  loginctl suspend 2>/dev/null || display
+}
+
+edit() {
+  ${EDITOR:-nano} "$SELF"
+}
+
+editwm() {
+  ${EDITOR:-nano} "$HOME/plainwm.c"
+}
+
+files() {
+  pcmanfm >/dev/null 2>&1 &
+}
+
+power() {
+  clear
+  echo "s sleep"
+  echo "d display off"
+  read -r c
+  case "$c" in
+    s) do_sleep ;;
+    d) display ;;
+  esac
+}
+
+findfile() {
+  printf "filename: "
+  read -r name
+  file=$(find ~ -type f -name "$name*" 2>/dev/null | head -n 1)
+  if [ -n "$file" ]; then
+    xdg-open "$file" >/dev/null 2>&1 &
+  else
+    echo "file not found"
+    pause
+  fi
+}
+
+package() {
+  printf "package: "
+  read -r name
+  $SUDO apk add "$name"
+}
+
+matrix() {
+  cmatrix
+}
+
+diskhealth() {
+clear
+for dev in sdb sdc sdd sde nvme0n1; do
+  [ -b "/dev/$dev" ] || continue
+  echo "=== /dev/$dev ==="
+  $SUDO smartctl -H "/dev/$dev" 2>&1 | grep -i "overall-health\|result"
+  $SUDO smartctl -A "/dev/$dev" 2>&1 | grep -E "Reallocated_Sector|Current_Pending_Sector|Offline_Uncorrectable|Reported_Uncorrect|Temperature_Celsius|CRC_Error|Percentage Used|Available Spare"
+  echo ""
+done
+pause
+}
+
+bar() {
+n=$(( $1 / 5 )); b=""; i=0
+while [ "$i" -lt 20 ]; do
+if [ "$i" -lt "$n" ]; then b="$b#"; else b="$b-"; fi
+i=$((i+1))
+done
+printf '[%s] %3d%%' "$b" "$1"
+}
+
+cpu_pct() {
+read -r _ u n s i w q sq _ < /proc/stat
+t1=$((u+n+s+i+w+q+sq)); i1=$((i+w))
+sleep 0.5
+read -r _ u n s i w q sq _ < /proc/stat
+t2=$((u+n+s+i+w+q+sq)); i2=$((i+w))
+dt=$((t2-t1))
+if [ "$dt" -gt 0 ]; then echo $(( 100 * (dt - (i2 - i1)) / dt )); else echo 0; fi
+}
+
+mem_pct() {
+awk '/MemTotal/{t=$2} /MemAvailable/{a=$2} END{printf "%d", (t-a)*100/t}' /proc/meminfo
+}
+
+dmi() {
+if [ "$(id -u)" -eq 0 ]; then dmidecode "$@"; else sudo -n dmidecode "$@"; fi
+}
+
+# ---------- screens ----------
+
+fetch() {
+clear
+echo "os $(. /etc/os-release 2>/dev/null; echo "$PRETTY_NAME")"
+echo "ur $(id -un)"
+echo "pr$(awk -F':' '/model name/{print $2; exit}' /proc/cpuinfo)"
+awk '/MemTotal/{t=$2} /MemAvailable/{a=$2} END{printf "rm %d MB used of %d MB\n", (t-a)/1024, t/1024}' /proc/meminfo
+df -h "$HOME"| awk 'NR==2{printf "ho %s used of %s (%s)\n", $3, $2, $5}'
+echo "ar $(uname -m) kernel $(uname -r)"
+echo "pc $(cat /sys/class/dmi/id/product_name 2>/dev/null) $(cat /sys/class/dmi/id/product_version 2>/dev/null)"
+up=$(cut -d. -f1 /proc/uptime)
+echo "up $((up/86400))d $((up%86400/3600))h $((up%3600/60))m"
+echo "re $(xrandr 2>/dev/null | awk '/\*/{print $1; exit}')"
+echo ""
+waitback
+}
+
+find_chmod_sh() {
+while true; do
+printf "target directory (b to back): "
+read -r target_dir
+target_dir=$(printf '%s' "$target_dir" | tr -d '\r' | sed 's/[[:space:]]*$//')
+case "$target_dir" in
+b|B) break ;;
+"~"*) target_dir="$HOME${target_dir#\~}" ;;
+esac
+if [ ! -d "$target_dir" ]; then
+echo "error: '$target_dir' is not a directory."
+continue
+fi
+find "$target_dir" -type f -name "*.sh" | while IFS= read -r file; do
+if chmod +x "$file" 2>/dev/null || $SUDO chmod +x "$file"; then
+echo "made executable: $file"
+else
+echo "failed: $file"
+fi
+done
+echo "done."
+echo ""
+done
+}
+
+laintop() {
+while true; do
+clear
+date
+dmi --type memory 2>/dev/null | grep -E 'Size:|Speed:|Locator:'
+echo "---"
+nproc --all
+lscpu | grep -E 'Core\(s\) per socket|Socket\(s\)|Thread\(s\) per core|^CPU\(s\):|MHz'
+echo "──────────────────────────────────────────────────"
+readkey 20
+[ -n "$key" ] && return
+done
+}
+
+dashboard() {
+while true; do
+clear
+cpu=$(cpu_pct)
+mem=$(mem_pct)
+disk=$(df / | awk 'NR==2 {gsub("%","",$5); print $5}')
+temp=$(awk '{printf "%.0f", $1/1000}' /sys/class/thermal/thermal_zone0/temp 2>/dev/null)
+load=$(cut -d' ' -f1 /proc/loadavg)
+procs=$(ps aux | wc -l)
+printf '\033[33m'
+echo "  ╔══════════════════════════════╗"
+echo "  ║              meth            ║"
+echo "  ╚                              ╝"
+printf '\023\n'
+printf '\033[32m  CPU   '; bar "$cpu"; printf '\033[0m\n\n'
+printf '\033[33m  MEM   '; bar "$mem"; printf '\033[0m\n\n'
+printf '\033[35m  DISK  '; bar "$disk"; printf '\033[0m\n\n'
+printf '\033[34m  PROCS %s\n' "$procs"
+printf '  TEMP  %s°C\033[0m\n\n' "${temp:-n/a}"
+printf '\033[31m  LOAD  %s\033[0m\n\n' "$load"
+readkey 20
+[ -n "$key" ] && return
+done
+}
+
+sysutil() {
+while true; do
+clear
+cat << 'EOF'
+1) disk usage        2) top memory hogs
+3) find large files  4) clean temp/cache
+5) network status    6) kill process
+7) backup config     8) install package
+b) back
+EOF
+printf " "
+read -r choice
+case "$choice" in
+1) clear; echo "disk usage by directory:"; du -xsh /* 2>/dev/null | sort -h | tail -15; pause ;;
+2) clear; echo "memory hogs:"; ps aux --sort=-%mem 2>/dev/null | head -8; pause ;;
+3) clear; printf "larger than (MB): "; read -r size
+case "$size" in ''|*[!0-9]*) echo "number only." ;; *) find / -xdev -type f -size +"${size}"M 2>/dev/null | head -20 ;; esac
+pause ;;
+4) clear; echo "cleaning..."
+rm -rf "$HOME"/.cache/* "$HOME"/.local/share/Trash/* 2>/dev/null
+find /tmp -mindepth 1 -maxdepth 1 ! -name '.X11-unix' ! -name '.ICE-unix' -exec $SUDO rm -rf {} + 2>/dev/null
+echo "done."; pause ;;
+5) clear; echo "network status:"; ip addr show; echo "---"; { netstat -tuln 2>/dev/null || ss -tuln; }; pause ;;
+6) clear; ps aux | head -30; printf "kill pid: "; read -r pid
+case "$pid" in ''|*[!0-9]*) echo "number only." ;; *) kill -9 "$pid" 2>/dev/null || $SUDO kill -9 "$pid"; echo "done." ;; esac
+pause ;;
+7) clear; echo "backing up..."
+out="$HOME/config-backup-$(date +%s).tar.gz"
+$SUDO tar -czf "$out" /etc 2>/dev/null && $SUDO chown "$(id -u)" "$out"
+echo "saved: $out"; pause ;;
+8) clear; printf "package name: "; read -r pkg; [ -n "$pkg" ] && $SUDO apk add $pkg; pause ;;
+b) break ;;
+esac
+done
+}
+
+update_system() {
+clear
+echo "updating..."
+$SUDO apk update && $SUDO apk upgrade
+echo "done."
+pause
+}
+
+text_color() {
+clear
+cat << 'EOF'
+1) white    2) green    3) blue
+4) cyan     5) yellow   6) red
+7) magenta  8) reset    b) back
+EOF
+printf " "
+read -r choice
+case "$choice" in
+1) printf '\033[37m' ;;
+2) printf '\033[32m' ;;
+3) printf '\033[34m' ;;
+4) printf '\033[36m' ;;
+5) printf '\033[33m' ;;
+6) printf '\033[31m' ;;
+7) printf '\033[35m' ;;
+8) printf '\033[0m' ;;
+b) return ;;
+esac
+echo "color changed (reset with 8)"
+sleep 1
+}
+
+wifi_restart() {
+clear
+echo "restarting wifi..."
+iface=$(ip link | grep "wlan" | head -1 | awk '{print $2}' | tr -d ':')
+[ -z "$iface" ] && iface="wlan0"
+$SUDO modprobe rtl8xxxu 2>/dev/null || true
+sleep 1
+$SUDO pkill -f wpa_supplicant 2>/dev/null || true
+$SUDO pkill -f udhcpc 2>/dev/null || true
+sleep 1
+$SUDO ip link set "$iface" down 2>/dev/null || true
+sleep 1
+$SUDO ip link set "$iface" up
+sleep 2
+$SUDO wpa_supplicant -B -i "$iface" -c /etc/wpa_supplicant/wpa_supplicant.conf -D nl80211,wext
+sleep 3
+count=0
+while [ "$count" -lt 15 ]; do
+state=$($SUDO wpa_cli -i "$iface" status 2>/dev/null | grep "wpa_state=" | cut -d= -f2)
+if [ "$state" = "COMPLETED" ]; then
+echo "connected"
+break
+fi
+echo "waiting... ($count/15)"
+sleep 1
+count=$((count + 1))
+done
+$SUDO udhcpc -i "$iface" -n -q 2>/dev/null || $SUDO udhcpc -i "$iface" -S
+sleep 1
+echo ""
+ip addr show "$iface" | grep "inet "
+echo ""
+pause
+}
+
+toggle_charge() {
+clear
+d=/sys/class/power_supply/BAT0
+if [ ! -e "$d/charge_control_end_threshold" ]; then
+echo "no charge limit support on this battery."
+pause
+return
+fi
+cur=$(cat "$d/charge_control_end_threshold")
+if [ "$cur" = 80 ]; then n=100; else n=80; fi
+echo 0 | $SUDO tee "$d/charge_control_start_threshold" >/dev/null 2>&1
+echo "$n" | $SUDO tee "$d/charge_control_end_threshold" >/dev/null
+echo $((n-5)) | $SUDO tee "$d/charge_control_start_threshold" >/dev/null 2>&1
+if [ -d /etc/tlp.d ]; then
+printf 'STOP_CHARGE_THRESH_BAT0=%s\nSTART_CHARGE_THRESH_BAT0=%s\n' "$n" $((n-5)) | $SUDO tee /etc/tlp.d/99-charge.conf >/dev/null
+fi
+echo "charge limit now: $(cat "$d/charge_control_end_threshold")%"
+pause
+}
+
+# ---------- chroot ----------
+
+# mounts everything the chroot needs, including your home folder at /mnt/home and /mnt/games.
+# it only mounts onto the chroot directory. it never changes files inside the chroot or on your system.
+chroot_prepare() {
+cp_dir="${1:-$CHROOT_DIR}"
+cp_uid=$(id -u)
+cp_mnt() { cp_t="$1"; shift; mountpoint -q "$cp_dir/$cp_t" || $SUDO mount "$@" "$cp_dir/$cp_t" 2>/dev/null; }
+$SUDO mkdir -p "$cp_dir/tmp/.X11-unix" "$cp_dir/run/user/$cp_uid" "$cp_dir/dev/shm" "$cp_dir/proc" "$cp_dir/sys" "$cp_dir/dev" "$cp_dir/mnt/games" "$cp_dir/mnt/home"
+cp_mnt dev --rbind /dev
+$SUDO mount --make-rslave "$cp_dir/dev" 2>/dev/null
+cp_mnt proc --rbind /proc
+$SUDO mount --make-rslave "$cp_dir/proc" 2>/dev/null
+cp_mnt sys -t sysfs sys
+cp_mnt dev/shm --bind /dev/shm
+cp_mnt tmp/.X11-unix --bind /tmp/.X11-unix
+cp_mnt run/user/"$cp_uid" --bind "/run/user/$cp_uid"
+cp_mnt mnt/games --bind "$GAMES_DIR"
+cp_mnt mnt/home --bind "$GAMES_DIR"
+$SUDO cp -n /etc/resolv.conf "$cp_dir/etc/resolv.conf" 2>/dev/null
+}
+
+chroot_exec() {
+ce_dir="$1"
+shift
+ce_uid=$(id -u)
+$SUDO env -i DISPLAY="$DISPLAY" XDG_RUNTIME_DIR="/run/user/$ce_uid" PULSE_SERVER="unix:/run/user/$ce_uid/pulse/native" HOME=/root TERM=xterm-256color LANG=C.UTF-8 PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin chroot "$ce_dir" "$@"
+}
+
+# unmounts everything the chroot got. never touches files inside the chroot
+chroot_unmount_all() {
+c="$CHROOT_DIR"; u=$(id -u)
+for m in mnt/games mnt/home run/user/$u tmp/.X11-unix dev/shm sys proc dev; do
+mountpoint -q "$c/$m" && $SUDO umount -R "$c/$m" 2>/dev/null
+done
+}
+
+# runs a command inside the chroot as a user, in the background (horizon, mocktail, any void app)
+chroot_app() {
+ca_user="$1"; shift
+ca_cmd="$*"
+ca_uid=$(id -u)
+[ -d "$CHROOT_DIR" ] || { echo "error: $CHROOT_DIR not found."; pause; return; }
+chroot_prepare "$CHROOT_DIR"
+xhost +local: >/dev/null 2>&1
+$SUDO chroot "$CHROOT_DIR" su "$ca_user" -s /bin/sh -c "export DISPLAY=$DISPLAY XDG_RUNTIME_DIR=/run/user/$ca_uid PULSE_SERVER=unix:/run/user/$ca_uid/pulse/native HOME=/home/$ca_user LANG=C.UTF-8; $ca_cmd" > "$tmp/app.log" 2>&1 &
+echo "started: $ca_cmd (log: $tmp/app.log)"
+sleep 2
+}
+
+chroot_shell() { # $1 user (empty = root)
+c="$CHROOT_DIR"; u=$(id -u); as="$1"
+[ -d "$c" ] || { echo "error: $c not found."; pause; return; }
+[ -d "$GAMES_DIR" ] || { echo "error: $GAMES_DIR not found."; pause; return; }
+chroot_prepare "$c"
+if [ ! -s "$c/etc/machine-id" ] && [ -r /etc/machine-id ]; then
+  $SUDO sh -c "cat /etc/machine-id > '$c/etc/machine-id'" 2>/dev/null
+fi
+
+xhost +local: >/dev/null 2>&1
+sh_in=/bin/sh; [ -x "$c/bin/bash" ] && sh_in=/bin/bash
+
+[ "$(cat /proc/sys/user/max_user_namespaces 2>/dev/null)" = 0 ] && $SUDO sysctl -w user.max_user_namespaces=10000 >/dev/null 2>&1
+cat > "$tmp/enter.sh" <<'ENTER'
+#!/bin/sh
+c="$1"; sh_in="$2"; as="$3"
+if command -v unshare >/dev/null 2>&1 && command -v pivot_root >/dev/null 2>&1; then
+  exec unshare -m -- sh -c 'mount --make-rprivate / && mount --rbind "$1" "$1" && cd "$1" && mkdir -p .oldroot && pivot_root . .oldroot && { umount -l /.oldroot 2>/dev/null; true; } && if [ -n "$3" ]; then exec su "$3" -s "$2"; else exec "$2" -i; fi' sh "$c" "$sh_in" "$as"
+fi
+if [ -n "$as" ]; then exec chroot "$c" su "$as" -s "$sh_in"; fi
+exec chroot "$c" "$sh_in" -i
+ENTER
+
+urxvt -e $SUDO env -i \
+  DISPLAY="$DISPLAY" \
+  XAUTHORITY="$HOME/.Xauthority" \
+  XDG_RUNTIME_DIR="/run/user/$u" \
+  PULSE_SERVER="unix:/run/user/$u/pulse/native" \
+  LANG=C.UTF-8 \
+  SDL_VIDEODRIVER=x11 \
+  TERM=xterm-256color \
+  HOME=/root \
+  PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin \
+     sh "$tmp/enter.sh" "$c" "$sh_in" "$as" &
+}
+
+chroot_stop() {
+clear
+echo "unmounting chroot..."
+chroot_unmount_all
+echo "done."
+pause
+}
+
+set_active_chroot() {
+CHROOT_DIR="$1"
+echo "$1" > "$base/chroot"
+echo "active chroot: $CHROOT_DIR"
+}
+
+tl_chroot_select() {
+clear
+echo "current chroot: $CHROOT_DIR"
+printf "new path [keep]: "
+read -r p
+if [ -n "$p" ] && [ -d "$p" ]; then set_active_chroot "$p"; fi
+pause
+}
+
+tl_chroot_berber() {
+chroot_shell berber
+}
+
+tl_chroot_install() {
+clear
+echo "install a new chroot (your current one is not touched)"
+echo "1) void (glibc)  2) void (musl)  3) gentoo (openrc)  4) arch"
+printf "[1]: "
+read -r dist
+[ -z "$dist" ] && dist=1
+case "$dist" in
+1) nm=void ;;
+2) nm=void-musl ;;
+3) nm=gentoo ;;
+4) nm=arch ;;
+*) return 0 ;;
+esac
+printf "dir [$HOME/chroot-$nm]: "
+read -r nd
+[ -z "$nd" ] && nd="$HOME/chroot-$nm"
+if [ -e "$nd" ] && [ -n "$(ls -A "$nd" 2>/dev/null)" ]; then
+echo "error: $nd is not empty. nothing was changed."
+pause
+return 0
+fi
+case "$dist" in
+1|2)
+vb=https://repo-default.voidlinux.org/live/current
+if [ "$dist" = 1 ]; then vp='void-x86_64-ROOTFS-[0-9]*\.tar\.xz'; else vp='void-x86_64-musl-ROOTFS-[0-9]*\.tar\.xz'; fi
+vf=$(fetch_txt "$vb/" | grep -o "$vp" | sort -u | tail -1)
+[ -z "$vf" ] && { echo "error: could not read $vb"; pause; return 0; }
+echo "downloading $vf ..."
+dl "$vb/$vf" "$tmp/$vf" || { echo "download failed."; pause; return 0; }
+$SUDO mkdir -p "$nd" && $SUDO tar xpf "$tmp/$vf" -C "$nd" || { echo "extract failed."; pause; return 0; }
+rm -f "$tmp/$vf"
+chroot_prepare "$nd"
+echo "updating void inside the new chroot..."
+chroot_exec "$nd" sh -c 'mkdir -p /etc/xbps.d && cp /usr/share/xbps.d/*-repository-*.conf /etc/xbps.d/ 2>/dev/null; xbps-install -Suy xbps && xbps-install -uy && xbps-install -y base-system && xbps-remove -y base-voidstrap; xbps-reconfigure -fa'
+;;
+3)
+gu=https://distfiles.gentoo.org/releases/amd64/autobuilds
+gp=$(fetch_txt "$gu/latest-stage3-amd64-openrc.txt" | grep -o '[0-9TZ]*/stage3-amd64-openrc-[0-9TZ]*\.tar\.xz' | head -1)
+[ -z "$gp" ] && { echo "error: could not read the gentoo stage3 list"; pause; return 0; }
+echo "downloading $gp ..."
+dl "$gu/$gp" "$tmp/stage3.tar.xz" || { echo "download failed."; pause; return 0; }
+$SUDO mkdir -p "$nd" && { $SUDO tar xpf "$tmp/stage3.tar.xz" --xattrs-include='*.*' --numeric-owner -C "$nd" 2>/dev/null || $SUDO tar xpf "$tmp/stage3.tar.xz" --numeric-owner -C "$nd"; } || { echo "extract failed."; pause; return 0; }
+rm -f "$tmp/stage3.tar.xz"
+chroot_prepare "$nd"
+printf "sync the portage tree now (emerge-webrsync)? (y/n): "
+read -r y
+[ "$y" = "y" ] && chroot_exec "$nd" emerge-webrsync
+;;
+4)
+command -v zstd >/dev/null 2>&1 || $SUDO apk add zstd || { pause; return 0; }
+echo "downloading the arch bootstrap ..."
+dl https://geo.mirror.pkgbuild.com/iso/latest/archlinux-bootstrap-x86_64.tar.zst "$tmp/arch.tar.zst" || { echo "download failed."; pause; return 0; }
+$SUDO mkdir -p "$nd" && zstd -dc "$tmp/arch.tar.zst" | $SUDO tar xp --numeric-owner --strip-components=1 -C "$nd" || { echo "extract failed."; pause; return 0; }
+rm -f "$tmp/arch.tar.zst"
+$SUDO mount --bind "$nd" "$nd"
+chroot_prepare "$nd"
+chroot_exec "$nd" sh -c 'echo "Server = https://geo.mirror.pkgbuild.com/\$repo/os/\$arch" > /etc/pacman.d/mirrorlist && pacman-key --init && pacman-key --populate archlinux && pacman -Sy --noconfirm'
+;;
+esac
+echo ""
+echo "installed: $nd"
+printf "create user berber in it? (y/n): "
+read -r y
+if [ "$y" = "y" ]; then
+chroot_exec "$nd" useradd -m berber
+chroot_exec "$nd" passwd berber
+fi
+printf "use it as the active chroot now? (y/n): "
+read -r y
+[ "$y" = "y" ] && set_active_chroot "$nd"
+pause
+}
+
+# sound inside the chroot. pulse only accepts a client whose uid matches the server's,
+# so the chroot user is given your uid. the test runs as that user with its own environment.
+tl_chroot_sound() {
+clear
+sc_dir="$CHROOT_DIR"
+sc_uid=$(id -u)
+[ -d "$sc_dir" ] || { echo "error: $sc_dir not found."; pause; return 0; }
+printf "chroot user to test [berber]: "; read -r sc_usr; [ -n "$sc_usr" ] || sc_usr=berber
+
+chroot_prepare "$sc_dir"
+audio_up
+
+if [ "$sc_usr" = root ]; then
+  sc_cuid=0; sc_home=/root
+else
+  sc_cuid=$($SUDO chroot "$sc_dir" id -u "$sc_usr" 2>/dev/null)
+  [ -n "$sc_cuid" ] || { echo "user $sc_usr is not in the chroot. add it first (ua)"; pause; return 0; }
+  sc_home=/home/$sc_usr
+  if [ "$sc_cuid" != "$sc_uid" ]; then
+    echo "chroot user $sc_usr is uid $sc_cuid, you are uid $sc_uid. pulse only lets matching uids in."
+    ask "change $sc_usr to uid $sc_uid inside the chroot" || { echo "not changed. sound will not work for $sc_usr"; pause; return 0; }
+    $SUDO chroot "$sc_dir" usermod -u "$sc_uid" "$sc_usr" || { echo "usermod failed: uid $sc_uid may be taken in the chroot"; pause; return 0; }
+    $SUDO chroot "$sc_dir" chown -R "$sc_uid" "$sc_home" 2>/dev/null
+    sc_cuid=$sc_uid
+  fi
+fi
+
+cookie="$HOME/.config/pulse/cookie"
+if [ -f "$cookie" ] && [ "$sc_usr" != root ]; then
+  $SUDO mkdir -p "$sc_dir$sc_home/.config/pulse"
+  $SUDO cp "$cookie" "$sc_dir$sc_home/.config/pulse/cookie"
+  $SUDO chown -R "$sc_cuid" "$sc_dir$sc_home/.config"
+fi
+
+if ! $SUDO chroot "$sc_dir" sh -c 'command -v pactl && command -v pacat && command -v aplay' >/dev/null 2>&1; then
+  echo "installing pulse and alsa tools in the chroot..."
+  chroot_exec "$sc_dir" sh -c 'cp /usr/share/xbps.d/*-repository-*.conf /etc/xbps.d/ 2>/dev/null; xbps-install -Sy pulseaudio-utils alsa-utils alsa-plugins-pulseaudio' || echo "install failed: read the message above"
+fi
+
+if [ ! -f "$sc_dir/etc/asound.conf" ]; then
+  printf 'pcm.!default {\n  type pulse\n}\nctl.!default {\n  type pulse\n}\n' | $SUDO tee "$sc_dir/etc/asound.conf" >/dev/null
+fi
+
+host_srv=none
+pgrep -x pulseaudio >/dev/null 2>&1 && host_srv=pulseaudio
+pgrep -x pipewire-pulse >/dev/null 2>&1 && host_srv=pipewire-pulse
+echo "host sound server:        $host_srv"
+echo "host socket:              $([ -S "/run/user/$sc_uid/pulse/native" ] && echo yes || echo NO)"
+echo "socket visible in chroot: $([ -S "$sc_dir/run/user/$sc_uid/pulse/native" ] && echo yes || echo NO)"
+echo "/dev/snd in chroot:       $(ls "$sc_dir/dev/snd" 2>/dev/null | wc -l) nodes"
+
+cat > "$tmp/sound-test.sh" <<EOF
+export HOME=$sc_home
+export XDG_RUNTIME_DIR=/run/user/$sc_cuid
+export PULSE_SERVER=unix:/run/user/$sc_cuid/pulse/native
+export PULSE_COOKIE=$sc_home/.config/pulse/cookie
+if pactl info >/dev/null 2>&1; then
+  pactl info 2>/dev/null | awk -F': ' '/Server Name/{print "pulse server: " \$2}'
+  pactl info 2>/dev/null | awk -F': ' '/Default Sink/{print "default sink: " \$2}'
+else
+  echo "pulse server: NOT reachable"
+fi
+echo "alsa cards: \$(aplay -l 2>/dev/null | grep -c '^card')"
+if [ "\$1" = play ]; then
+  head -c 88200 /dev/urandom | pacat --rate=44100 --format=s16le --channels=1 --volume=6000 && echo "pulse pipe: ok"
+  head -c 88200 /dev/urandom | aplay -q -f S16_LE -r 44100 -c 1 && echo "alsa to pulse: ok"
+fi
+EOF
+$SUDO cp "$tmp/sound-test.sh" "$sc_dir/tmp/sound-test.sh"
+mode=check
+ask "play a short quiet noise burst inside the chroot" && mode=play
+if [ "$sc_usr" = root ]; then
+  $SUDO chroot "$sc_dir" sh /tmp/sound-test.sh "$mode"
+else
+  $SUDO chroot "$sc_dir" su "$sc_usr" -s /bin/sh -c "sh /tmp/sound-test.sh $mode"
+fi
+$SUDO rm -f "$sc_dir/tmp/sound-test.sh"
+echo ""
+echo "if it says NOT reachable, the host sound server is down: run aud and try again"
+pause
+}
+
+# flatpak fix = chroot doctor
+tl_fpf() {
+clear
+fc="$CHROOT_DIR"
+fu=$(id -u)
+[ -d "$fc" ] || { echo "error: $fc not found."; pause; return 0; }
+for ff in usr/bin/bwrap usr/libexec/flatpak-bwrap; do
+[ -e "$fc/$ff" ] && $SUDO chown root:root "$fc/$ff" && $SUDO chmod 755 "$fc/$ff" && echo "fixed: $ff (root, not setuid)"
+done
+[ -e "$fc/etc/sudo.conf" ] && $SUDO chown root:root "$fc/etc/sudo.conf" && echo "fixed: etc/sudo.conf"
+if [ -e "$fc/etc/sudoers" ]; then $SUDO chown root:root "$fc/etc/sudoers"; $SUDO chmod 440 "$fc/etc/sudoers"; echo "fixed: etc/sudoers"; fi
+[ -d "$fc/etc/sudoers.d" ] && $SUDO chown -R root:root "$fc/etc/sudoers.d"
+if [ -e "$fc/usr/bin/sudo" ]; then $SUDO chown root:root "$fc/usr/bin/sudo"; $SUDO chmod 4755 "$fc/usr/bin/sudo"; echo "fixed: usr/bin/sudo"; fi
+$SUDO mkdir -p "/run/user/$fu"
+$SUDO rm -rf "/run/user/$fu/.flatpak"
+$SUDO chown "$fu:$(id -g)" "/run/user/$fu"
+$SUDO chmod 700 "/run/user/$fu"
+echo "fixed: /run/user/$fu (owner you, no root leftovers)"
+bu=$(chroot_exec "$fc" id -u berber 2>/dev/null)
+echo "berber uid: chroot ${bu:-none}, host $fu"
+if [ -n "$bu" ] && [ "$bu" != "$fu" ]; then
+printf "uids differ, set berber to $fu inside the chroot? (y/n): "
+read -r y
+[ "$y" = "y" ] && chroot_exec "$fc" usermod -u "$fu" berber
+fi
+mun=$(cat /proc/sys/user/max_user_namespaces 2>/dev/null)
+[ "$mun" = 0 ] && $SUDO sysctl -w user.max_user_namespaces=10000
+echo ""
+echo "run flatpak as berber, never as root: key cb enters the chroot as berber"
+pause
+}
+
+tl_xbps_repo() {
+clear
+chroot_prepare "$CHROOT_DIR"
+chroot_exec "$CHROOT_DIR" sh -c 'cp /usr/share/xbps.d/00-repository-main.conf /etc/xbps.d/ && xbps-install -Syy'
+pause
+}
+
+tl_xbps_wine() {
+clear
+chroot_prepare "$CHROOT_DIR"
+chroot_exec "$CHROOT_DIR" xbps-install -Sy wine-mono
+pause
+}
+
+tl_xbps_py() {
+clear
+chroot_prepare "$CHROOT_DIR"
+chroot_exec "$CHROOT_DIR" xbps-install -Sy python3 python3-pip python3-devel gobject-introspection-devel gtk4 libadwaita-devel
+pause
+}
+
+tl_useradd() {
+clear
+chroot_prepare "$CHROOT_DIR"
+chroot_exec "$CHROOT_DIR" useradd -m -G wheel,audio,video,optical,storage,network,input berber
+chroot_exec "$CHROOT_DIR" passwd berber
+pause
+}
+
+tl_chown() {
+clear
+chroot_prepare "$CHROOT_DIR"
+chroot_exec "$CHROOT_DIR" sh -c 'chown -R 1000:1000 /run/user/1000'
+pause
+}
+
+tl_visudo() {
+chroot_prepare "$CHROOT_DIR"
+chroot_exec "$CHROOT_DIR" visudo
+}
+
+tl_flatpak() {
+clear
+chroot_prepare "$CHROOT_DIR"
+chroot_exec "$CHROOT_DIR" sh -c 'flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo && flatpak install -y flathub space.bigrat.mocktail'
+pause
+}
+
+# Horizon's launcher needs python 3.10+, JDK 25 and Vulkan inside the chroot (from its README).
+horizon_install() {
+clear
+[ -d "$CHROOT_DIR" ] || { echo "error: no chroot at $CHROOT_DIR"; pause; return; }
+h="$CHROOT_DIR/home/berber/horizon"
+command -v jq >/dev/null 2>&1 || $SUDO apk add jq || { pause; return; }
+
+chroot_prepare "$CHROOT_DIR"
+echo "installing python, jdk 25 and vulkan into the chroot..."
+chroot_exec "$CHROOT_DIR" sh -c 'cp /usr/share/xbps.d/*-repository-*.conf /etc/xbps.d/ 2>/dev/null; xbps-install -Sy python3 openjdk25 vulkan-loader mesa-vulkan-radeon mesa-dri' || echo "xbps install failed: read the message above"
+
+rel=$(curl -fsSL "https://api.github.com/repos/horizon-rust/horizon/releases?per_page=30") || { echo "could not reach github"; pause; return; }
+url=$(printf '%s' "$rel" | jq -r '[.[] | select(.tag_name | startswith("launcher-v")) | .assets[] | select(.name | test("linux"; "i")) | select(.name | test("x86_64|amd64"; "i"))][0].browser_download_url')
+[ -n "$url" ] && [ "$url" != null ] || { echo "no linux launcher found in the releases"; pause; return; }
+name=${url##*/}
+$SUDO mkdir -p "$h" && $SUDO chown "$(id -u):$(id -g)" "$h" || { pause; return; }
+curl -fL -o "$tmp/$name" "$url" || { echo "download failed"; pause; return; }
+case "$name" in
+  *.tar.gz|*.tgz) tar xzf "$tmp/$name" -C "$h" ;;
+  *.tar.xz) tar xJf "$tmp/$name" -C "$h" ;;
+  *.zip) command -v unzip >/dev/null 2>&1 || $SUDO apk add unzip; unzip -oq "$tmp/$name" -d "$h" ;;
+  *) cp "$tmp/$name" "$h/$name" ;;
+esac
+find "$h" -type f \( -name 'horizon*' -o -name 'Horizon*' \) -exec chmod +x {} \;
+$SUDO chroot "$CHROOT_DIR" chown -R berber /home/berber/horizon 2>/dev/null
+rm -f "$tmp/$name"
+echo "launcher files in $h:"
+ls "$h"
+pause
+}
+
+horizon_run() {
+bin=$(find "$CHROOT_DIR/home/berber/horizon" -type f -perm -u+x \( -name 'horizon*' -o -name 'Horizon*' \) 2>/dev/null | head -1)
+[ -n "$bin" ] || { horizon_install; return; }
+chroot_app berber "${bin#$CHROOT_DIR}"
+}
+
+mc_install() {
+clear
+[ -d "$CHROOT_DIR" ] || { echo "error: no chroot at $CHROOT_DIR"; pause; return; }
+command -v jq >/dev/null 2>&1 || $SUDO apk add jq || { pause; return; }
+v=${MC_VERSION:-26.3}
+mc="$CHROOT_DIR/home/berber/.minecraft"
+t="$tmp/mc"
+rm -rf "$t" && mkdir -p "$t"
+vurl=$(curl -fsSL https://piston-meta.mojang.com/mc/game/version_manifest_v2.json | jq -r --arg v "$v" '.versions[] | select(.id == $v) | .url')
+[ -n "$vurl" ] && [ "$vurl" != null ] || { echo "version $v is not in the mojang list"; pause; return; }
+curl -fsSL "$vurl" -o "$t/version.json" || { echo "version info download failed"; pause; return; }
+aid=$(jq -r '.assetIndex.id' "$t/version.json")
+aurl=$(jq -r '.assetIndex.url' "$t/version.json")
+$SUDO mkdir -p "$mc/versions/$v" "$mc/assets/indexes" || { pause; return; }
+$SUDO chown -R "$(id -u):$(id -g)" "$mc" || { pause; return; }
+cp "$t/version.json" "$mc/versions/$v/$v.json"
+curl -fsSL "$aurl" -o "$mc/assets/indexes/$aid.json" || { echo "asset index download failed"; pause; return; }
+{
+  jq -r --arg m "$mc" --arg v "$v" '"\(.downloads.client.url) \($m)/versions/\($v)/\($v).jar"' "$t/version.json"
+  jq -r --arg m "$mc" '.libraries[] | .downloads.artifact? // empty | "\(.url) \($m)/libraries/\(.path)"' "$t/version.json"
+  jq -r --arg m "$mc" '.objects | to_entries[] | .value.hash | "https://resources.download.minecraft.net/\(.[0:2])/\(.) \($m)/assets/objects/\(.[0:2])/\(.)"' "$mc/assets/indexes/$aid.json"
+} > "$t/list"
+echo "downloading $(wc -l < "$t/list") files for $v (a few minutes)"
+xargs -P 16 -L 1 sh -c '[ -s "$2" ] || curl -fsSL --create-dirs -o "$2" "$1" || echo "failed: $1"' sh < "$t/list"
+[ -s "$mc/versions/$v/$v.jar" ] || { echo "client jar missing, install incomplete"; pause; return; }
+$SUDO chroot "$CHROOT_DIR" chown -R berber /home/berber/.minecraft 2>/dev/null
+echo "minecraft $v ready for berber: $mc"
+pause
+}
+
+sudo_cat() {
+clear
+u=$(id -un)
+printf '%s ALL=(ALL) NOPASSWD: /bin/cat\n' "$u" | $SUDO tee /etc/sudoers.d/wired-cat >/dev/null
+$SUDO chmod 440 /etc/sudoers.d/wired-cat
+$SUDO visudo -cf /etc/sudoers.d/wired-cat >/dev/null 2>&1 || { $SUDO rm -f /etc/sudoers.d/wired-cat; echo "sudoers check failed, nothing changed"; pause; return; }
+echo "$u can run cat with sudo, no password"
+pause
+}
+
+# ----- battery -----
+
+bat_dir() {
+for bd in /sys/class/power_supply/BAT*; do
+[ -d "$bd" ] && { echo "$bd"; return 0; }
+done
+}
+
+tl_bat_status() {
+clear
+ac=no
+for s in /sys/class/power_supply/*; do
+[ "$(cat "$s/type" 2>/dev/null)" = Mains ] && [ "$(cat "$s/online" 2>/dev/null)" = 1 ] && ac=yes
+done
+echo "ac       $ac"
+b=$(bat_dir)
+if [ -n "$b" ]; then
+st=$(cat "$b/status" 2>/dev/null)
+cap=$(cat "$b/capacity" 2>/dev/null)
+pw=$(cat "$b/power_now" 2>/dev/null)
+if [ -z "$pw" ] || [ "$pw" = 0 ]; then
+cu=$(cat "$b/current_now" 2>/dev/null)
+vo=$(cat "$b/voltage_now" 2>/dev/null)
+[ -n "$cu" ] && [ -n "$vo" ] && pw=$((cu * vo / 1000000))
+fi
+en=$(cat "$b/energy_now" 2>/dev/null)
+if [ -z "$en" ]; then
+cn=$(cat "$b/charge_now" 2>/dev/null)
+vo=$(cat "$b/voltage_now" 2>/dev/null)
+[ -n "$cn" ] && [ -n "$vo" ] && en=$((cn * vo / 1000000))
+fi
+watts=$(awk -v p="${pw:-0}" 'BEGIN{printf "%.2f", p/1000000}')
+left=$(awk -v e="${en:-0}" -v p="${pw:-0}" 'BEGIN{if (p>0) printf "%.1f", e/p; else print "n/a"}')
+case "$st" in
+Charging) echo "battery  $cap% charging at $watts W" ;;
+Discharging) echo "battery  $cap% draining $watts W, about $left h left" ;;
+*) echo "battery  $cap% ($st)" ;;
+esac
+fi
+if command -v ryzenadj >/dev/null 2>&1; then
+ri=$($SUDO ryzenadj -i 2>/dev/null)
+pk=$(printf '%s\n' "$ri" | awk -F'|' '/PPT VALUE SLOW/{gsub(/ /,"",$3); print $3; exit}')
+[ -z "$pk" ] && pk=$(printf '%s\n' "$ri" | awk -F'|' '/STAPM VALUE/{gsub(/ /,"",$3); print $3; exit}')
+echo "chip     ${pk:-n/a} W now (cpu + gpu)"
+else
+echo "chip     n/a (ryz installs ryzenadj)"
+fi
+echo ""
+echo "boost    $(cat /sys/devices/system/cpu/cpufreq/boost 2>/dev/null || echo n/a)  (1 = on)"
+echo "smt      $(cat /sys/devices/system/cpu/smt/control 2>/dev/null || echo n/a)"
+echo "governor $(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || echo n/a)"
+echo "pstate   $(cat /sys/devices/system/cpu/amd_pstate/status 2>/dev/null || echo n/a)"
+echo "gpu      $(cat /sys/class/drm/card*/device/power_dpm_force_performance_level 2>/dev/null | head -1)"
+echo "aspm     $(cat /sys/module/pcie_aspm/parameters/policy 2>/dev/null)"
+pause
+}
+
+sysw() {
+[ -e "$2" ] || return 1
+echo "$1" | $SUDO tee "$2" >/dev/null 2>&1
+}
+
+dl() {
+if command -v curl >/dev/null 2>&1; then curl -fL -o "$2" "$1"; else wget -O "$2" "$1"; fi
+}
+
+fetch_txt() {
+curl -fsSL "$1" 2>/dev/null || wget -qO- "$1" 2>/dev/null
+}
+
+tl_bat_on() {
+clear
+echo "cpu max watts = the most power the chip may pull. lower = longer battery, slower bursts."
+printf "cpu max watts [8]: "
+read -r w
+case "$w" in ''|*[!0-9]*) w=8 ;; esac
+printf "brightness %% [skip]: "
+read -r br
+sysw 0 /sys/devices/system/cpu/cpufreq/boost && echo "boost off"
+sysw off /sys/devices/system/cpu/smt/control && echo "smt off"
+for g in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do sysw powersave "$g"; done
+echo "governor powersave"
+for g in /sys/class/drm/card*/device/power_dpm_force_performance_level; do sysw low "$g" && echo "gpu low"; done
+sysw powersupersave /sys/module/pcie_aspm/parameters/policy && echo "aspm powersupersave"
+if command -v ryzenadj >/dev/null 2>&1; then
+$SUDO ryzenadj --stapm-limit=$((w * 1000)) --fast-limit=$(((w + 2) * 1000)) --slow-limit=$((w * 1000)) --tctl-temp=75 2>&1 | tail -3
+echo "cpu max ${w}W"
+else
+echo "ryzenadj missing: key ryz installs it"
+fi
+case "$br" in
+''|*[!0-9]*) ;;
+*)
+[ "$br" -gt 100 ] && br=100
+[ "$br" -lt 5 ] && br=5
+for bl in /sys/class/backlight/*; do
+[ -e "$bl/max_brightness" ] || continue
+mx=$(cat "$bl/max_brightness")
+sysw $((mx * br / 100)) "$bl/brightness" && echo "brightness $br%"
+break
+done ;;
+esac
+echo ""
+echo "check the watts in a minute: key bs"
+pause
+}
+
+tl_bat_off() {
+clear
+sysw 1 /sys/devices/system/cpu/cpufreq/boost && echo "boost on"
+sysw on /sys/devices/system/cpu/smt/control && echo "smt on"
+gv=schedutil
+grep -q schedutil /sys/devices/system/cpu/cpu0/cpufreq/scaling_available_governors 2>/dev/null || gv=ondemand
+for g in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do sysw "$gv" "$g"; done
+echo "governor $gv"
+for g in /sys/class/drm/card*/device/power_dpm_force_performance_level; do sysw auto "$g" && echo "gpu auto"; done
+sysw default /sys/module/pcie_aspm/parameters/policy && echo "aspm default"
+echo "cpu max watts resets on reboot"
+pause
+}
+
+tl_ryzenadj_install() {
+clear
+$SUDO apk add git cmake build-base pciutils-dev || { pause; return 0; }
+(cd /tmp && rm -rf RyzenAdj && git clone --depth=1 https://github.com/FlyGoat/RyzenAdj.git && cd RyzenAdj && mkdir -p build && cd build && cmake -DCMAKE_BUILD_TYPE=Release .. && make -j"$(nproc)" && $SUDO cp ryzenadj /usr/local/bin/) || { pause; return 0; }
+$SUDO ryzenadj -i 2>&1 | head -8
+echo ""
+echo "if it says /dev/mem is not accessible: key bp, then reboot"
+pause
+}
+
+tl_bat_params() {
+clear
+gf=/etc/default/grub
+[ -f "$gf" ] || { echo "no $gf"; pause; return 0; }
+params="iomem=relaxed amdgpu.abmlevel=3 pcie_aspm.policy=powersupersave nvme_core.default_ps_max_latency_us=5500 amd_pstate=passive"
+echo "current: $(grep '^GRUB_CMDLINE_LINUX_DEFAULT' "$gf")"
+echo "adding:  $params"
+echo "(iomem=relaxed lets ryzenadj work, amd_pstate=passive uses the amd pstate driver, abmlevel=3 dims the backlight on dark content)"
+printf "continue? (y/n): "
+read -r y
+[ "$y" = "y" ] || return 0
+$SUDO cp "$gf" "$gf.bak"
+for p in $params; do
+pk=${p%%=*}
+grep '^GRUB_CMDLINE_LINUX_DEFAULT' "$gf" | grep -q "$pk=" && continue
+$SUDO sed -i "s|^\(GRUB_CMDLINE_LINUX_DEFAULT=\"[^\"]*\)\"|\1 $p\"|" "$gf"
+done
+echo "now:     $(grep '^GRUB_CMDLINE_LINUX_DEFAULT' "$gf")"
+if command -v grub-mkconfig >/dev/null 2>&1; then
+$SUDO grub-mkconfig -o /boot/grub/grub.cfg 2>&1 | tail -3
+elif command -v grub2-mkconfig >/dev/null 2>&1; then
+$SUDO grub2-mkconfig -o /boot/grub/grub.cfg 2>&1 | tail -3
+else
+echo "grub-mkconfig not found, update grub yourself"
+fi
+echo "reboot to apply. backup: $gf.bak"
+pause
+}
+
+# ----- grub editor: timeout, quiet, background, any parameter -----
+
+grub_set() { $SUDO sed -i "/^#*$1=/d" /etc/default/grub; echo "$1=$2" | $SUDO tee -a /etc/default/grub >/dev/null; }
+grub_param() {
+p=$2; k=${p%%=*}
+cur=$(sed -n 's/^GRUB_CMDLINE_LINUX_DEFAULT="\(.*\)"/\1/p' /etc/default/grub)
+new=""
+for w in $cur; do case "$w" in "$k"|"$k="*) continue ;; esac; new="$new $w"; done
+[ "$1" = add ] && new="$new $p"
+new=$(echo "$new" | sed 's/^ *//; s/ *$//')
+grub_set GRUB_CMDLINE_LINUX_DEFAULT "\"$new\""
+}
+tl_grub() {
+g=/etc/default/grub
+[ -f "$g" ] || { echo "no $g"; pause; return 0; }
+while true; do
+clear
+grep '^GRUB_CMDLINE_LINUX_DEFAULT\|^GRUB_TIMEOUT=\|^GRUB_BACKGROUND' "$g"
+cat << 'EOF'
+1 timeout        2 quiet on/off        3 background image
+4 add param      5 remove param        6 apply (grub-mkconfig)
+7 recommended set (amd_pstate, iomem, aspm, nvme, backlight dim)     b back
+EOF
+printf " "; read -r c
+case "$c" in
+1) printf "seconds (0 = no wait): "; read -r v; case "$v" in ''|*[!0-9]*) ;; *) grub_set GRUB_TIMEOUT "$v" ;; esac ;;
+2) if grep '^GRUB_CMDLINE_LINUX_DEFAULT' "$g" | grep -q quiet; then grub_param del quiet; else grub_param add quiet; fi ;;
+3) printf "image path (png/jpg/tga): "; read -r v; if [ -f "$v" ]; then grub_set GRUB_BACKGROUND "\"$v\""; else echo "no such file"; fi ;;
+4) printf "param (e.g. amd_pstate=passive): "; read -r v; [ -n "$v" ] && grub_param add "$v" ;;
+5) printf "param to remove (name only): "; read -r v; [ -n "$v" ] && grub_param del "${v%%=*}" ;;
+6) $SUDO grub-mkconfig -o /boot/grub/grub.cfg 2>&1 | tail -2; echo "reboot to apply"; pause ;;
+7) grub_param add amd_pstate=passive; grub_param add iomem=relaxed; grub_param add pcie_aspm.policy=powersupersave
+   grub_param add nvme_core.default_ps_max_latency_us=5500; grub_param add amdgpu.abmlevel=3; grub_set GRUB_TIMEOUT 1
+   echo "recommended set written. apply with 6"; pause ;;
+b) return ;;
+esac
+done
+}
+
+# ----- devices: type a number to flip one, 8 = all off, 9 = all on, or name on|off. saved, back after reboot -----
+
+usb_live() {
+for v in /sys/bus/usb/devices/*/idVendor; do
+  [ -e "$v" ] || continue
+  ud=${v%/*}
+  if [ "$(cat "$v" 2>/dev/null):$(cat "$ud/idProduct" 2>/dev/null)" = "$1" ]; then
+    [ "$(cat "$ud/authorized" 2>/dev/null)" = 1 ] && echo on || echo off
+    return
+  fi
+done
+echo none
+}
+
+usbauth() {
+for v in /sys/bus/usb/devices/*/idVendor; do
+  [ -e "$v" ] || continue
+  ud=${v%/*}
+  if [ "$(cat "$v" 2>/dev/null):$(cat "$ud/idProduct" 2>/dev/null)" = "$1" ]; then
+    printf '%s\n' "$2" > "$ud/authorized" 2>/dev/null
+  fi
+done
+}
+
+net_live() {
+nfound=no
+for ni in /sys/class/net/$1*; do
+  [ -e "$ni/flags" ] || continue
+  nfound=yes
+  case "$(cat "$ni/flags")" in *[13579bdfBDF]) echo on; return ;; esac
+done
+[ "$nfound" = yes ] && echo off || echo none
+}
+
+netset() {
+for ni in /sys/class/net/$1*; do
+  [ -e "$ni/flags" ] || continue
+  if [ "$2" = 1 ]; then ip link set "${ni##*/}" down 2>/dev/null; else ip link set "${ni##*/}" up 2>/dev/null; fi
+done
+}
+
+mod() { grep -q "^$1 " /proc/modules 2>/dev/null; }
+
+dev_live() {
+case "$1" in
+  bluetooth)
+    bs=on
+    for r in /sys/class/rfkill/rfkill*; do
+      [ -e "$r/type" ] || continue
+      [ "$(cat "$r/type")" = bluetooth ] && [ "$(cat "$r/soft")" = 1 ] && bs=off
+    done
+    mod btusb || bs=off
+    echo "$bs" ;;
+  sound) if mod snd_hda_intel; then echo on; else echo off; fi ;;
+  camera) if mod uvcvideo; then echo on; else echo off; fi ;;
+  ethernet) net_live e ;;
+  wifi) net_live wl ;;
+  cardreader) usb_live 058f:9540 ;;
+  fingerprint) usb_live 06cb:00bd ;;
+esac
+}
+
+dev_apply() {
+off=0; [ "$2" = off ] && off=1
+case "$1" in
+  bluetooth)
+    if [ "$off" = 1 ]; then rfkill block bluetooth 2>/dev/null; modprobe -r btusb 2>/dev/null
+    else modprobe btusb 2>/dev/null; rfkill unblock bluetooth 2>/dev/null; fi ;;
+  sound)
+    if [ "$off" = 1 ]; then modprobe -r snd_hda_intel 2>/dev/null || echo "sound is busy: close audio apps first"
+    else modprobe snd_hda_intel 2>/dev/null; fi ;;
+  camera)
+    if [ "$off" = 1 ]; then modprobe -r uvcvideo 2>/dev/null; else modprobe uvcvideo 2>/dev/null; fi ;;
+  ethernet) netset e "$off" ;;
+  wifi) netset wl "$off" ;;
+  cardreader) usbauth 058f:9540 $((1-off)) ;;
+  fingerprint) usbauth 06cb:00bd $((1-off)) ;;
+esac
+}
+
+dev_set() {
+dev_apply "$1" "$2"
+touch /etc/wired-devices
+{ grep -v "^$1=" /etc/wired-devices; echo "$1=$2"; } > /etc/wired-devices.new && mv /etc/wired-devices.new /etc/wired-devices
+hook_install
+echo "$1: $2 (saved, comes back the same after reboot)"
+}
+
+dev_flip() {
+s=$(dev_live "$1")
+if [ "$s" = on ]; then s=off; else s=on; fi
+$SUDO sh "$SELF" dev_set "$1" "$s"
+}
+
+devices_boot() {
+[ -f /etc/wired-devices ] || return 0
+while IFS='=' read -r n s; do [ -n "$n" ] && dev_apply "$n" "$s"; done < /etc/wired-devices
+return 0
+}
+
+dev_menu() {
+while true; do
+clear
+echo "devices (b back)"
+i=1
+for d in $DEVICES; do printf '  %s  %-12s %s\n' "$i" "$d" "$(dev_live "$d")"; i=$((i+1)); done
+echo "  8  all off        9  all on"
+echo "  or type: name on|off"
+printf ' '
+read -r pick a || return
+case "$pick" in
+  b|B|"") return ;;
+  8) for d in $DEVICES; do $SUDO sh "$SELF" dev_set "$d" off; done ;;
+  9) for d in $DEVICES; do $SUDO sh "$SELF" dev_set "$d" on; done ;;
+  [1-7]) d=$(echo $DEVICES | cut -d' ' -f"$pick"); dev_flip "$d" ;;
+  *)
+    case " $DEVICES " in
+      *" $pick "*) ;;
+      *) echo "unknown: $pick"; pause; continue ;;
+    esac
+    case "$a" in
+      on|off) $SUDO sh "$SELF" dev_set "$pick" "$a" ;;
+      *) dev_flip "$pick" ;;
+    esac ;;
+esac
+done
+}
+
+# ----- battery saver: now, and saved for reboot -----
+
+save_apply() {
+for g in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do sysw powersave "$g"; done
+for g in /sys/devices/system/cpu/cpu*/cpufreq/energy_performance_preference; do sysw power "$g"; done
+sysw 0 /sys/devices/system/cpu/cpufreq/boost
+for p in /sys/bus/pci/devices/*/power/control /sys/bus/usb/devices/*/power/control; do sysw auto "$p"; done
+sysw powersupersave /sys/module/pcie_aspm/parameters/policy
+for d in /sys/class/drm/card[0-9]/device/power_dpm_force_performance_level; do sysw low "$d"; done
+if command -v iw >/dev/null 2>&1; then
+  for n in /sys/class/net/w*; do [ -e "$n" ] && iw dev "${n##*/}" set power_save on 2>/dev/null; done
+fi
+if [ -n "$RYZEN_W" ] && command -v ryzenadj >/dev/null 2>&1; then
+  ryzenadj --stapm-limit=$((RYZEN_W*1000)) --fast-limit=$((RYZEN_W*1000)) --slow-limit=$((RYZEN_W*1000)) --tctl-temp=75 >/dev/null 2>&1
+fi
+echo "battery saver applied"
+}
+
+save_undo() {
+gv=schedutil; grep -q schedutil /sys/devices/system/cpu/cpu0/cpufreq/scaling_available_governors 2>/dev/null || gv=ondemand
+for g in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do sysw "$gv" "$g"; done
+for g in /sys/devices/system/cpu/cpu*/cpufreq/energy_performance_preference; do sysw balance_performance "$g"; done
+sysw 1 /sys/devices/system/cpu/cpufreq/boost
+sysw default /sys/module/pcie_aspm/parameters/policy
+for d in /sys/class/drm/card[0-9]/device/power_dpm_force_performance_level; do sysw auto "$d"; done
+echo "battery saver off (governor $gv)"
+}
+
+save_on() { $SUDO touch /etc/wired-saver && $SUDO sh "$SELF" save_apply; $SUDO sh "$SELF" hook_install; pause; }
+save_off() { $SUDO rm -f /etc/wired-saver; $SUDO sh "$SELF" save_undo; pause; }
+
+# installs the boot hook: a copy of this script runs "boot" at every start
+hook_install() {
+mkdir -p /usr/local/lib/wired /etc/local.d
+[ "$SELF" = /usr/local/lib/wired/wired.sh ] || cp "$SELF" /usr/local/lib/wired/wired.sh
+printf '#!/bin/sh\nsh /usr/local/lib/wired/wired.sh boot\n' > /etc/local.d/wired.start
+chmod +x /etc/local.d/wired.start
+rc-update add local default >/dev/null 2>&1
+}
+
+boot_hook() { $SUDO sh "$SELF" hook_install; echo "boot hook installed: saved battery saver and devices come back after every reboot"; pause; }
+
+boot() { [ -f /etc/wired-saver ] && save_apply; devices_boot; return 0; }
+
+# ----- optimize: battery and gpu settings now -----
+
+on_bat() { for f in /sys/class/power_supply/*/online; do [ -f "$f" ] || continue; case "$f" in *AC*|*ADP*) [ "$(cat "$f")" = 0 ] && return 0 ;; esac; done; return 1; }
+optimize() {
+[ -f /etc/X11/xorg.conf.d/20-noglamor.conf ] && $SUDO rm -f /etc/X11/xorg.conf.d/20-noglamor.conf && echo "removed 20-noglamor.conf (applies after X restarts)"
+if [ -n "$DISPLAY" ] && command -v glxinfo >/dev/null 2>&1; then
+r=$(glxinfo -B 2>/dev/null | sed -n 's/^OpenGL renderer string: //p')
+case "$r" in "") echo "renderer unknown" ;; *llvmpipe*) echo "WARNING: software rendering ($r). restart X." ;; *) echo "renderer: $r" ;; esac
+fi
+if on_bat && [ -n "$DISPLAY" ] && command -v xrandr >/dev/null 2>&1; then
+out=$(xrandr --query | awk '/ connected/ {print $1; exit}')
+cur=$(xrandr --query | awk -v o="$out" '$1 == o {on=1; next} /^[^ ]/ {on=0} on && /\*/ {for (i=2;i<=NF;i++) if ($i ~ /\*/) {r=$i; gsub(/[*+]/,"",r); print r; exit}}')
+if [ -n "$out" ] && [ -n "$cur" ] && awk -v c="$cur" 'BEGIN{exit !(c > 60.5)}'; then xrandr --output "$out" --rate 60 2>/dev/null && echo "$out: $cur Hz -> 60 Hz on battery"; fi
+fi
+if on_bat && command -v iw >/dev/null 2>&1; then
+for i in $(iw dev 2>/dev/null | awk '$1=="Interface"{print $2}'); do $SUDO iw dev "$i" set power_save on 2>/dev/null && echo "wifi $i power save on"; done
+fi
+for p in /sys/class/drm/card[0-9]/device/power_dpm_force_performance_level; do [ -f "$p" ] && sysw auto "$p" >/dev/null; done
+echo "optimize done"
+}
+
+# ----- kernel: prompt what to keep, then build -----
+
+kern_prompt() {
+clear
+k=${KSRC:-$(ls -d /usr/src/linux* 2>/dev/null | tail -n1)}
+echo "kernel source found: ${k:-none}"
+printf "press enter to use it, or type another folder: "; read -r x
+[ -n "$x" ] && k=$x
+[ -f "$k/Makefile" ] || { echo "no kernel source at $k"; pause; return; }
+cd "$k" || return
+if [ ! -f .config ]; then
+  if [ -r /proc/config.gz ]; then zcat /proc/config.gz > .config; else cp "/boot/config-$(uname -r)" .config; fi
+fi
+echo "your running kernel settings are the starting point (.config)"
+ask "tickless idle: cpu sleeps longer between ticks (battery)" && scripts/config -e NO_HZ_FULL -e NO_HZ_IDLE
+ask "300 Hz tick" && scripts/config -d HZ_100 -d HZ_250 -d HZ_1000 -e HZ_300 --set-val HZ 300
+ask "zen cpu tuning (MZEN)" && scripts/config -e MZEN
+ask "amd-pstate driver (needed for amd_pstate=passive)" && scripts/config -e X86_AMD_PSTATE
+ask "remove unused drivers (marvell, ralink, firewire, infiniband, nfc, xen, hyper-v, old filesystems, debug info)" && \
+  scripts/config -d WLAN_VENDOR_MARVELL -d WLAN_VENDOR_RALINK -d INFINIBAND -d FIREWIRE -d NFC -d XEN -d HV_HYPER_V -d JFFS2_FS -d UBIFS_FS -d ROMFS_FS -d CRAMFS -d MINIX_FS -d DEBUG_INFO
+make olddefconfig >/dev/null 2>&1 && echo "config ready: $k/.config (build it with kb)"
+cd "$HOME" || true
+pause
+}
+
+kern_build() {
+clear
+k=${KSRC:-$(ls -d /usr/src/linux* 2>/dev/null | tail -n1)}
+[ -f "$k/.config" ] || { echo "no .config in $k. run kern first"; pause; return; }
+$SUDO apk add build-base bc flex bison elfutils-dev openssl-dev perl || { pause; return; }
+cd "$k" || { pause; return; }
+make -j"$(nproc)" && $SUDO make modules_install && $SUDO make install && echo "kernel built. run grub editor option 6, then reboot"
+cd "$HOME" || true
+pause
+}
+
+# ----- disk: repair after a bad shutdown without unmounting (check runs at next boot) -----
+
+disk_fix() {
+clear
+for p in $(lsblk -rno NAME,FSTYPE 2>/dev/null | awk '$2 ~ /^ext[234]$/ {print $1}'); do
+echo "/dev/$p: $($SUDO tune2fs -l "/dev/$p" 2>/dev/null | grep -i 'filesystem state')"
+done
+ask "schedule a full check and repair at the next boot" && { $SUDO touch /forcefsck && echo "scheduled. reboot when you can"; }
+pause
+}
+
+cpu_gov() {
+clear
+echo "driver   $(cat /sys/devices/system/cpu/cpufreq/policy0/scaling_driver 2>/dev/null)"
+echo "governor $(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null)  (available: $(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_available_governors 2>/dev/null))"
+echo "pstate   $(cat /sys/devices/system/cpu/amd_pstate/status 2>/dev/null)"
+printf "set governor (blank = keep): "; read -r g
+if [ -n "$g" ]; then for c in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do sysw "$g" "$c" >/dev/null; done; fi
+pause
+}
+
+autocpu() {
+clear
+$SUDO apk add git python3 py3-pip python3-dev gcc musl-dev dmidecode pkgconf cairo-dev gobject-introspection-dev gtk+3.0-dev || { pause; return; }
+if apk info -e tlp >/dev/null 2>&1 || [ -e /etc/init.d/tlp ]; then
+  echo "tlp found: stopping and disabling it (auto-cpufreq and tlp both control the cpu)"
+  $SUDO rc-service tlp stop 2>/dev/null
+  $SUDO rc-update del tlp default 2>/dev/null
+fi
+rm -rf "$tmp/auto-cpufreq"
+git clone --depth=1 https://github.com/AdnanHodzic/auto-cpufreq.git "$tmp/auto-cpufreq" || { pause; return; }
+$SUDO python3 -m venv /opt/auto-cpufreq/venv || { pause; return; }
+$SUDO /opt/auto-cpufreq/venv/bin/python -m pip install --upgrade pip wheel
+$SUDO /opt/auto-cpufreq/venv/bin/python -m pip install PyGObject || echo "PyGObject failed, continuing"
+$SUDO /opt/auto-cpufreq/venv/bin/python -m pip install "$tmp/auto-cpufreq" || { echo "auto-cpufreq install failed"; pause; return; }
+$SUDO ln -sf /opt/auto-cpufreq/venv/bin/auto-cpufreq /usr/local/bin/auto-cpufreq
+$SUDO mkdir -p /etc/local.d
+printf '#!/bin/sh\n/usr/local/bin/auto-cpufreq --daemon >/var/log/auto-cpufreq.log 2>&1 &\n' | $SUDO tee /etc/local.d/auto-cpufreq.start >/dev/null
+$SUDO chmod +x /etc/local.d/auto-cpufreq.start
+$SUDO rc-update add local default >/dev/null 2>&1
+$SUDO sh -c '/usr/local/bin/auto-cpufreq --daemon >/var/log/auto-cpufreq.log 2>&1 &'
+echo "auto-cpufreq installed and running. tlp is off."
+pause
+}
+
+# ----- sound (host): makes sure the sound server is up and its socket exists -----
+
+audio_up() {
+uid=$(id -u)
+if [ ! -S "/run/user/$uid/pulse/native" ]; then
+  if command -v pipewire-pulse >/dev/null 2>&1; then
+    pkill -x pipewire-pulse 2>/dev/null; pkill -x wireplumber 2>/dev/null; pkill -x pipewire 2>/dev/null; sleep 1
+    (pipewire >/dev/null 2>&1 &); (wireplumber >/dev/null 2>&1 &); (pipewire-pulse >/dev/null 2>&1 &)
+  elif command -v pulseaudio >/dev/null 2>&1; then
+    pulseaudio -k >/dev/null 2>&1; sleep 1; pulseaudio --start >/dev/null 2>&1
+  fi
+fi
+i=0
+while [ ! -S "/run/user/$uid/pulse/native" ] && [ "$i" -lt 30 ]; do sleep 0.2; i=$((i+1)); done
+if [ -S "/run/user/$uid/pulse/native" ]; then echo "sound server: up"; else echo "sound server: NOT running"; fi
+}
+
+tl_audio() {
+clear
+pkill -x pipewire-pulse 2>/dev/null; pkill -x wireplumber 2>/dev/null; pkill -x pipewire 2>/dev/null; pulseaudio -k 2>/dev/null
+sleep 1
+audio_up
+pause
+}
+
+tl_speaker() {
+clear
+command -v speaker-test >/dev/null 2>&1 || $SUDO apk add alsa-utils || { pause; return; }
+audio_up
+timeout 10 speaker-test -c 2 -t wav -l 1
+echo "speaker test stopped (10 s max)"
+pause
+}
+
+# ----- record (screen + mic, res + fps + file) -----
+
+tl_record() {
+clear
+if ! command -v ffmpeg >/dev/null 2>&1; then
+  printf "ffmpeg missing, install? (y/n): "; read -r y
+  [ "$y" = y ] && $SUDO apk add ffmpeg
+  command -v ffmpeg >/dev/null 2>&1 || { pause; return; }
+fi
+nat=$(xrandr 2>/dev/null | awk '/\*/{print $1; exit}')
+[ -z "$nat" ] && { echo "no X screen found."; pause; return; }
+printf "res [$nat]: "; read -r res; [ -z "$res" ] && res=$nat
+printf "fps [30]: "; read -r fps; [ -z "$fps" ] && fps=30
+mkdir -p "$HOME/recordings"
+dflt="$HOME/recordings/rec-$(date +%Y%m%d-%H%M%S).mkv"
+printf "file [$dflt]: "; read -r out; [ -z "$out" ] && out=$dflt
+enc="-c:v libx264 -preset ultrafast -pix_fmt yuv420p"
+ffmpeg -hide_banner -encoders 2>/dev/null | grep -q libx264 || enc="-c:v mpeg4 -q:v 4"
+ain=""
+if ffmpeg -hide_banner -devices 2>/dev/null | grep -q ' pulse '; then ain="-f pulse -i default"
+elif ffmpeg -hide_banner -devices 2>/dev/null | grep -q ' alsa '; then ain="-f alsa -i default"
+fi
+aenc=""; [ -n "$ain" ] && aenc="-c:a aac"
+vf=""; [ "$res" != "$nat" ] && vf="-vf scale=$(echo "$res" | tr x :)"
+echo "recording to $out (press q to stop)"
+ffmpeg -hide_banner -f x11grab -framerate "$fps" -video_size "$nat" -i "${DISPLAY:-:0}" $ain $vf $enc $aenc "$out"
+ls -lh "$out" 2>/dev/null
+pause
+}
+
+# ----- disk health -----
+
+fstype_of() {
+ft=$(blkid -o value -s TYPE "/dev/$1" 2>/dev/null)
+[ -z "$ft" ] && ft=$(lsblk -no FSTYPE "/dev/$1" 2>/dev/null | head -1)
+echo "$ft"
+}
+
+tl_disk() {
+clear
+command -v smartctl >/dev/null 2>&1 || { echo "installing smartmontools..."; $SUDO apk add smartmontools || { pause; return 0; }; }
+lsblk -d -o NAME,SIZE,MODEL,ROTA,TRAN 2>/dev/null || ls /sys/block
+printf "\ndisk (sda, nvme0n1...): "
+read -r dev
+[ -b "/dev/$dev" ] || { echo "no such disk."; pause; return 0; }
+sd=""
+$SUDO smartctl -H "/dev/$dev" 2>&1 | grep -qiE "unknown usb bridge|specify device type" && sd="-d sat"
+clear
+echo "=== /dev/$dev ==="
+$SUDO smartctl $sd -H "/dev/$dev" 2>&1 | grep -iE "overall-health|result"
+$SUDO smartctl $sd -A "/dev/$dev" 2>&1 | grep -E "Reallocated|Pending|Offline_Uncorrectable|Reported_Uncorrect|Temperature|CRC_Error|Percentage Used|Available Spare|Media and Data|Power_On|Power On"
+echo ""
+printf "s short test / r repair ext2,3,4 (unmounted) / enter back: "
+read -r dch
+case "$dch" in
+s)
+$SUDO smartctl $sd -t short "/dev/$dev" 2>&1 | grep -iE "test|wait|minutes"
+echo "run this key again in 2 minutes to read the result"
+;;
+r)
+printf "partition to repair (sda1...): "
+read -r part
+[ -b "/dev/$part" ] || { echo "no such partition."; pause; return 0; }
+if grep -q "^/dev/$part " /proc/mounts; then
+echo "/dev/$part is mounted. use dfix to check it at the next boot"
+pause
+return 0
+fi
+case "$(fstype_of "$part")" in
+ext2|ext3|ext4) $SUDO e2fsck -f -y "/dev/$part" ;;
+*) echo "repair supports ext2/3/4." ;;
+esac
+;;
+esac
+pause
+}
+
+# ----- build / installs (only what is in the dump, plus the options you already had) -----
+
+tl_mksh() {
+clear
+printf 'HISTFILE=~/.mksh_history\nHISTSIZE=10000\nPS1='"'"'$(print -n "${USER}@${HOSTNAME%%.*}:${PWD##*/}$ ")'"'"'\n' > ~/.mkshrc
+mksh
+}
+
+tl_dockapps_big() {
+clear
+cd ~/dockapps && (cd wmCalClock && ./autogen >/dev/null 2>&1; CFLAGS="-fcommon" ./configure >/dev/null 2>&1; CFLAGS="-fcommon" make -j$(nproc) >/dev/null 2>&1; $SUDO make install >/dev/null 2>&1); (cd wmcliphist && CFLAGS="-fcommon" make -j$(nproc) >/dev/null 2>&1; $SUDO make install >/dev/null 2>&1); (cd wmfortune && CFLAGS="-fcommon" make -j$(nproc) >/dev/null 2>&1; $SUDO make install >/dev/null 2>&1); (cd wmswallow && make xfree >/dev/null 2>&1; $SUDO cp wmswallow /usr/local/bin/); (cd wmtunlo && gcc -Wall -Os -fcommon -fgnu89-inline -I/usr/include/X11 -c docklib.c && gcc -Wall -Os -fcommon -fgnu89-inline -I/usr/include/X11 docklib.o wmtunlo.c -o wmtunlo -lXpm -lX11 -lXext -lm && $SUDO cp wmtunlo /usr/local/bin/); (cd wmmixer && autoreconf -fi >/dev/null 2>&1; ./configure >/dev/null 2>&1; make -j$(nproc) >/dev/null 2>&1; $SUDO make install >/dev/null 2>&1); (cd wmfu && CFLAGS="-fcommon" make -j$(nproc) >/dev/null 2>&1; $SUDO make install >/dev/null 2>&1); (cd wmcube/wmcube && gcc -DLINUX -Wall -O2 -I/usr/include/X11 -c wmcube.c -o wmcube.o && gcc wmcube.o -o wmcube -ldockapp -lXpm -lXext -lX11 -lm && $SUDO cp wmcube /usr/local/bin/); (cd wmclock && CFLAGS="-fcommon" ./configure >/dev/null 2>&1; CFLAGS="-fcommon" make -j$(nproc) >/dev/null 2>&1; $SUDO make install >/dev/null 2>&1); $SUDO cp /usr/local/lib/libdockapp.so* /usr/lib/ 2>/dev/null; $SUDO mkdir -p /usr/share/wmcube/3D-objects && $SUDO cp wmcube/wmcube/*.xpm /usr/share/wmcube/ 2>/dev/null; $SUDO cp wmcube/3D-objects/* /usr/share/wmcube/3D-objects/ 2>/dev/null; echo "all dockapps built"
+cd ~
+pause
+}
+
+tl_dockapps_small() {
+clear
+$SUDO apk add git build-base autoconf automake libtool pkgconf libxpm-dev upower-dev && { [ -d ~/dockapps ] || git clone --depth=1 https://github.com/window-maker/dockapps.git ~/dockapps; } && cd ~/dockapps && for d in wmcpuload wmmemload wmbattery wmclock; do cd "$d" && autoreconf -fi 2>/dev/null || true; ./configure && make -j"$(nproc)" && $SUDO make install && cd ..; done
+cd ~
+pause
+}
+
+# mpv from the dump: meson build only
+tl_mpv_meson() {
+clear
+$SUDO apk add build-base git python3 ffmpeg-dev libass-dev libx11-dev libxext-dev libxv-dev libxinerama-dev libxrandr-dev libxscrnsaver-dev mesa-dev alsa-lib-dev pulseaudio-dev libjpeg-turbo-dev libpng-dev zlib-dev luajit-dev meson ninja nasm libxpresent-dev || { pause; return; }
+cd ~ && rm -rf mpv && git clone --depth=1 https://github.com/mpv-player/mpv.git || { pause; return; }
+cd ~/mpv && meson setup build --prefix=/usr -Dlua=luajit -Dx11=enabled -Dgl=enabled -Dvulkan=disabled -Dcpp_std=c++20 -Dcpp_args="-D_GNU_SOURCE" -Dc_link_args="-lstdc++" -Dcpp_link_args="-lstdc++" && meson compile -C build -j"$(nproc)" && $SUDO meson install -C build
+cd ~
+pause
+}
+
+mpv_conf() {
+mkdir -p "$HOME/.config/mpv"
+printf 'hwdec=vaapi\nvo=gpu\n' > "$HOME/.config/mpv/mpv.conf"
+echo "wrote ~/.config/mpv/mpv.conf (hwdec=vaapi, vo=gpu)"; pause
+}
+
+tl_thumbs() {
+clear
+$SUDO apk add tumbler ffmpegthumbnailer gdk-pixbuf librsvg
+$SUDO mkdir -p /usr/local/bin
+printf '#!/bin/sh\necho "LANG=C.UTF-8"\necho "LC_ALL=C.UTF-8"\n' | $SUDO tee /usr/local/bin/locale >/dev/null
+$SUDO chmod +x /usr/local/bin/locale
+pause
+}
+
+tl_cflags() {
+clear
+export CFLAGS="-Os -march=znver1"
+export CXXFLAGS="-Os -march=znver1"
+echo "CFLAGS=$CFLAGS (this session)"
+pause
+}
+
+tl_torrent() {
+clear
+printf "client (qbittorrent/transmission): "
+read -r client
+if [ "$client" = "qbittorrent" ]; then src="$HOME/.local/share/qBittorrent/BT_backup"
+elif [ "$client" = "transmission" ]; then src="$HOME/.config/transmission/torrents"
+else return 0; fi
+printf "directory to save torrents: "
+read -r out
+mkdir -p "$out"
+for f in "$src"/*.torrent; do
+[ -f "$f" ] || continue
+name=$(transmission-show "$f" 2>/dev/null | sed -n 's/^Name: //p')
+[ -n "$name" ] && cp "$f" "$out/$name.torrent"
+done
+pause
+}
+
+tl_7x() {
+clear
+$SUDO tee /usr/local/bin/7x >/dev/null <<'SEVENX'
+#!/bin/sh
+for f in "$@"; do
+  f=${f#file://}
+  7z x -y -o"${f%.*}" "$f"
+done
+SEVENX
+$SUDO chmod +x /usr/local/bin/7x
+pause
+}
+
+tl_backup() {
+clear
+bk=/mnt/usb/backup
+rel=$(uname -r)
+$SUDO mkdir -p "$bk" && $SUDO cp /etc/apk/world "$bk/package-list.txt" && { if [ -r /proc/config.gz ]; then zcat /proc/config.gz | $SUDO tee "$bk/kernel-config-$rel" >/dev/null; else $SUDO cp "/boot/config-$rel" "$bk/kernel-config-$rel"; fi; } && $SUDO tar -cpf "$bk/grub.tar" -C / etc/default/grub etc/grub.d && $SUDO tar -cpf "$bk/boot.tar" -C / boot && $SUDO tar -cpf "$bk/home-$(id -un).tar" -C /home "$(id -un)"
+echo "saved to $bk"
+pause
+}
+
+tl_sxhkd() {
+${EDITOR:-nano} ~/.config/sxhkd/sxhkdrc
+}
+
+tl_sshfs() {
+clear
+$SUDO modprobe fuse
+$SUDO sshfs root@100.112.44.37:/ /mnt
+pause
+}
+
+tl_tailscale() {
+clear
+$SUDO sh -c 'tailscaled >/var/log/tailscaled.log 2>&1 &' && sleep 3 && $SUDO tailscale up
+pause
+}
+
+tl_bwrap() {
+$SUDO chmod u+s /usr/bin/bwrap
+sleep 1
+}
+
+tl_wmaker() {
+clear
+$SUDO sed -i 's|WITH setstyle|WITH /usr/local/bin/setstyle|g' /usr/local/share/WindowMaker/appearance.menu 2>/dev/null
+sed -i '/^[[:space:]]*IconPath[[:space:]]*=[[:space:]]*(/,/^[[:space:]]*);[[:space:]]*$/d' ~/GNUstep/Defaults/WindowMaker 2>/dev/null
+pause
+}
+
+tl_shutdown() {
+printf "shutdown now? (y/n): "
+read -r y
+[ "$y" = y ] || return 0
+chroot_unmount_all
+$SUDO shutdown -h now
+}
+
+# ----- dump screens (commands from your old notes) -----
+
+d_glibc() { clear; $SUDO wget -q -O /etc/apk/keys/sgerrand.rsa.pub https://alpine-pkgs.sgerrand.com/sgerrand.rsa.pub && wget https://github.com/sgerrand/alpine-pkg-glibc/releases/download/2.35-r1/glibc-2.35-r1.apk && $SUDO apk add --allow-untrusted glibc-2.35-r1.apk; pause; }
+d_aports() { clear; cd ~/aports/main/linux-lts && abuild unpack && cd src/linux-*/ && cp /boot/config-"$(uname -r)" .config; cd ~; echo "unpacked into ~/aports/main/linux-lts/src. next: kern (prompt) on that folder, then abuild -r"; pause; }
+d_prism() { clear; flatpak install -y flathub org.prismlauncher.PrismLauncher; pause; }
+d_fuse() { clear; $SUDO modprobe fuse; pause; }
+d_torrentown() { clear; $SUDO chown -R "$USER:$USER" ~/.config/transmission; pause; }
+d_kicks() { clear; ${EDITOR:-nano} ~/.config/sxhkd/sxhkdrc; pause; }
+d_fmnote() { clear; echo "thunar right click: fm (Open terminal here)"; pause; }
+d_ytdlp() { clear; $SUDO apk add yt-dlp; pause; }
+d_nw() { clear; $SUDO apk add nwjs || echo "nwjs is not in your apk repos"; pause; }
+d_mesa() { clear; $SUDO apk add mesa-demos; pause; }
+d_gentoo() { tl_chroot_install; }
+
+show_dump() {
+clear
+cat << 'EOF'
+fmt  thunar: open terminal here  
+cs   choose active chroot              cb   enter chroot as berber
+mt   mocktail                          hz   horizon
+dk   disk health                       nc   install a new chroot
+ytdlp  yt-dlp                          mesa   mesa-demos
+glibc  glibc 2.35                      prism  prismlauncher (flatpak)
+fuse   load fuse                       tchown transmission folder owner
+d1  mpv build with meson               d3  dockapps small (cpu mem bat clock)
+d4  glibc 2.35 apk (sgerrand)          d5  kernel from aports (unpack)
+d6  prism launcher flatpak             d7  modprobe fuse
+d8  transmission folder chown          d9  pipewire / pulse restart
+d10 sxhkd keys edit                    d12 yt-dlp
+d13 gentoo chroot install              b   back
+EOF
+}
+
+# ---------- menus ----------
+
+cat_art() {
+[ "$ui" = 0 ] && return
+[ "$art" = 0 ] && return
+cat <<'eof'
+  /\___________/\
+  )             (
+  \  _       _  /
+  /      _      \
+eof
+}
+
+run() {
+  if command -v "$1" >/dev/null 2>&1; then "$@"
+  else echo "$1 not found"; pause
+  fi
+}
+
+show_more() {
+clear
+cat << 'EOF'
+                                    layer 01
+    .--.
+   |o_o |
+   |:_/ |
+  //   \ \
+ (|     | )
+/'\_   _/`\
+\___)=(___/
+: b,r,e
+t text color
+w restart wifi
+h system dashboard
+x system utilities
+k tools
+j build
+ln learn
+p charge limit 80/100
+9 unmount chroot
+o old menu
+e edit
+b back
+EOF
+}
+
+show_old() {
+clear
+echo "                                    layer 02"
+cat_art
+echo "1 fetch"
+echo "2 wall"
+echo "3 calc"
+echo "4 sleep"
+echo "5 info"
+echo "7 matrix"
+echo "2s wallscale"
+echo "d diskhealth"
+echo "s shell"
+echo "n nano"
+echo "e edit"
+echo "fm files"
+echo "q quit"
+echo "sc screenshot"
+echo "rf refresh"
+echo "b back"
+}
+
+show_tools() {
+clear
+echo "                                    layer 03"
+cat_art
+cat << 'EOF'
+bs   battery status (watts, ac)       bon  battery saver on (now)
+boff battery saver off                ryz  install ryzenadj
+bp   battery boot params              rec  record screen + mic
+snd  chroot sound check               fpf  flatpak fix 
+grub grub editor                      dev  devices on/off
+sv   saver on, saved for reboot       svo  saver off
+bh   boot hook                        kern kernel: what to keep
+kb   kernel build                     dfix diskcheck boot
+opt  optimize  gpu now                cpu  cpu governor
+auto auto-cpufreq install             mpvc mpv config 
+dp   dump:layer 5                     ee   sudo sh 
+EOF
+}
+
+show_build() {
+clear
+echo "                                    layer 04"
+cat << 'EOF'
+\   / * __ _  _|
+ \M/  | | (/ (_|
+dock   dockapps big                dock2  dockapps cpu/mem/bat/clock
+mpvm   mpv meson build             thumb  thumbnails + locale
+cfl    -Os -march=znver1 cflags    aud    restart audio
+spk    speaker test                trn    torrent export
+7x     install 7x                  bak    usb backup
+ssh    mount ssh box               wmfix  wmaker menu fix
+ts     tailscale                   bw     bwrap suid
+off    shutdown                    xr     void: xbps repo sync
+wine   void: wine-mono             xpy    void: python/gtk4 deps
+ua     void: add user berber       own    void: fix ownership
+vs     void: visudo                fpk    void: flatpak + mocktail
+aports kernel from aports          b      back
+EOF
+}
+
+show_learn() {
+clear
+echo "                                    layer 05"
+cat_art
+cat << 'EOF'
+z1  variables           z8  redirects + pipes
+z2  quoting             z9  text tools
+z3  exit status         z10 safe scripts
+z4  tests               z11 debug + portable
+z5  loops               z12 skeleton + practice
+z6  functions           z13 reading list
+z7  arguments           z14 toggle a setting in a file
+b   back
+EOF
+}
+
+lesson_run() {
+echo "--- example ---"
+cat "$tmp/ex.sh"
+echo "--- output ---"
+printf 'r run it / enter back: '
+read -r lk
+if [ "$lk" = "r" ]; then
+echo ""
+sh "$tmp/ex.sh"
+echo ""
+pause
+fi
+}
+
+lesson() {
+clear
+echo "lesson $1 of 14   (z1..z14, in order)"
+echo ""
+case "$1" in
+1) cat <<'T'
+VARIABLES: setting them and using them
+name=berber            set. no spaces around =
+echo "$name"           use. $name, always in quotes
+n=5; n=$((n + 1))      math. $(( )) does whole numbers only
+today=$(date +%F)      store what a command prints
+unset name             remove it
+readonly pi=3          cannot be changed afterwards
+export X=1             programs you start can see X. plain variables stay in the script
+${v:-fallback}         use fallback when v is empty or unset
+${v:=fallback}         same, and also store it in v
+${v:?need v}           stop with an error when v is empty (a safety net)
+${#v}                  length          ${v%.txt}   cut a suffix
+${v##*/}               cut the path    ${v%/*}     keep only the folder
+built in: $HOME $USER $PWD $PATH $0 (script name) $$ (pid) $? (last status)
+exercise: put your hostname in a variable, print: host: NAME (N letters)
+T
+cat > "$tmp/ex.sh" <<'X'
+f=/home/berber/music/song.final.mp3
+echo "file:   ${f##*/}"
+echo "folder: ${f%/*}"
+echo "no ext: ${f%.*}"
+echo "length: ${#f}"
+unset maybe
+echo "default: ${maybe:-nothing set}"
+n=5; n=$((n * 2 + 1)); echo "math: $n"
+host=$(uname -n); echo "host: $host (${#host} letters)"
+X
+;;
+2) cat <<'T'
+QUOTING AND WORD SPLITTING
+"..."    $vars and $(commands) expand, spaces stay together
+'...'    nothing expands, it is literal
+\x       escapes one character
+An unquoted $var is split on spaces and then glob-expanded. This is the bug
+behind most broken scripts:
+  f="my file.txt"; rm $f      tries to delete "my" and "file.txt"
+  rm "$f"                     deletes the right file
+"$@"     every argument kept whole.   $*  glues them into one string
+IFS      the characters used for splitting (default: space, tab, newline)
+rule: quote every expansion unless you want splitting on purpose
+exercise: make a file called "a b.txt" and delete it the safe way
+T
+cat > "$tmp/ex.sh" <<'X'
+f="my file.txt"
+echo "unquoted:"; printf '  [%s]\n' $f
+echo "quoted:";   printf '  [%s]\n' "$f"
+echo 'single quotes keep $f literal'
+echo "double quotes use $f"
+set -- one "two words" three
+echo "args: $#"; for a in "$@"; do printf '  <%s>\n' "$a"; done
+X
+;;
+3) cat <<'T'
+EXIT STATUS AND CHAINING
+every command ends with a number: 0 = ok, 1-255 = failed. read it with $?
+a && b       run b only if a worked
+a || b       run b only if a failed
+! a          flip the result
+if a; then ... fi     the test is any command, not just [ ]
+grep -q word file     quiet, it only sets the status
+command -v foo >/dev/null 2>&1 || echo "foo missing"
+exit 3       leave the script with status 3
+return 3     leave a function with status 3
+a && b || c  is not if/else: c also runs when b fails. use if when it matters
+exercise: print "found" or "missing" depending on whether /etc/hostname exists
+T
+cat > "$tmp/ex.sh" <<'X'
+true;  echo "true gives $?"
+false; echo "false gives $?"
+ls /nope 2>/dev/null; echo "ls /nope gives $?"
+[ -d /etc ] && echo "/etc is a folder"
+[ -d /nope ] || echo "/nope is not a folder"
+if grep -q root /etc/passwd; then echo "root exists"; fi
+if ! command -v nosuchtool >/dev/null 2>&1; then echo "nosuchtool is missing"; fi
+X
+;;
+4) cat <<'T'
+TESTS WITH [ ]
+[ is a command, so spaces are required:  [ "$a" = "$b" ]
+strings   =  !=  -z (empty)  -n (not empty)
+numbers   -eq -ne -lt -le -gt -ge       [ 3 -lt 10 ]
+files     -e exists  -f file  -d folder  -r -w -x  -s (not empty)  -L link
+join      [ a ] && [ b ]   or   [ a ] || [ b ]     (skip -a and -o)
+plain sh has no == and no [[ ]]
+always quote: [ "$x" = y ] works when x is empty, [ $x = y ] breaks
+comparing numbers as strings is a trap: [ 10 = 10.0 ] is false, [ 10 -eq 10 ] is true
+exercise: print big when /etc has more than 50 entries
+T
+cat > "$tmp/ex.sh" <<'X'
+a=7; b=10
+[ "$a" -lt "$b" ] && echo "$a is less than $b"
+[ "$a" = "$b" ] || echo "as strings they differ"
+s=""
+[ -z "$s" ] && echo "s is empty"
+[ -f /etc/passwd ] && echo "passwd is a file"
+[ -d /etc ] && [ -r /etc ] && echo "/etc is a readable folder"
+n=$(ls /etc | wc -l)
+if [ "$n" -gt 50 ]; then echo "big ($n entries)"; else echo "small ($n entries)"; fi
+X
+;;
+5) cat <<'T'
+LOOPS
+for x in one two three; do echo "$x"; done
+for f in *.sh; do [ -e "$f" ] || continue; echo "$f"; done
+i=1; while [ "$i" -le 3 ]; do echo "$i"; i=$((i + 1)); done
+until [ -f /tmp/ready ]; do sleep 1; done
+while read -r line; do echo "got: $line"; done < file
+break leaves the loop, continue jumps to the next round
+catch: cmd | while read ... runs the loop in a subshell, so variables set inside
+are lost afterwards. fix: send the output to a temp file and loop over it:
+  cmd > "$t"; while read -r line; do ...; done < "$t"
+there is no seq in plain sh: use the while counter
+an unmatched glob stays literal, that is why the [ -e "$f" ] || continue guard is there
+exercise: count the lines of every .sh file in a folder
+T
+cat > "$tmp/ex.sh" <<'X'
+for x in one two three; do echo "item $x"; done
+i=1
+while [ "$i" -le 3 ]; do echo "round $i"; i=$((i + 1)); done
+t=$(mktemp)
+printf 'a\nb\nc\n' > "$t"
+count=0
+while read -r line; do count=$((count + 1)); done < "$t"
+echo "lines read: $count"
+printf 'a\nb\nc\n' | { c2=0; while read -r l; do c2=$((c2 + 1)); done; echo "inside pipe: $c2"; }
+rm -f "$t"
+X
+;;
+6) cat <<'T'
+FUNCTIONS AND SCOPE
+greet() { echo "hi $1"; }        call it: greet berber
+$1 $2 .. are the function's own arguments, $# counts them
+return gives a status (0-255). to give text back, print it and capture it:
+  x=$(greet berber)
+plain sh has no local. every variable is global, so:
+  give helper variables a prefix (tl_x, ml_i), or
+  run the body in a subshell:  f() ( ...body... )   nothing leaks out
+  (a subshell also cannot change your variables on purpose)
+define a function before the line that calls it
+set -- a b c inside a function changes only that function's arguments
+exercise: write add() that prints the sum of its two arguments
+T
+cat > "$tmp/ex.sh" <<'X'
+greet() { echo "hi $1"; }
+add() { echo $(($1 + $2)); }
+isbig() { [ "$1" -gt 100 ]; }
+greet berber
+sum=$(add 20 22); echo "sum: $sum"
+isbig 500 && echo "500 is big"
+isbig 5 || echo "5 is not big"
+leak() { x=changed; }
+x=original; leak; echo "after leak(): $x"
+noleak() ( x=changed2 )
+x=original; noleak; echo "after noleak(): $x"
+X
+;;
+7) cat <<'T'
+ARGUMENTS AND OPTIONS
+$0 script name   $1 $2 .. the arguments   $# how many   "$@" all of them   $$ pid
+shift            drop $1, everything moves down one
+set -- a b c     set the list yourself. this is how you build lists without arrays:
+                   set -- ffmpeg -i in.mp4;  set -- "$@" -t 5 out.mp4;  "$@"
+default value:   file=${1:-/etc/hostname}
+options:         while getopts "ab:" o; do case $o in a) a=1 ;; b) val=$OPTARG ;; esac; done
+                 shift $((OPTIND - 1))     (what is left are the plain arguments)
+forward unchanged: other_cmd "$@"
+check count:     [ $# -ge 1 ] || { echo "usage: $0 file"; exit 1; }
+exercise: print your arguments in reverse order
+T
+cat > "$tmp/ex.sh" <<'X'
+set -- apple "green pear" cherry
+echo "count: $#"
+echo "first: $1"
+shift
+echo "after shift: $# left, first is $1"
+set -- "$@" fig
+for a in "$@"; do printf '  <%s>\n' "$a"; done
+set -- -a -b 5 rest
+while getopts "ab:" o; do case $o in a) echo "flag a" ;; b) echo "b = $OPTARG" ;; esac; done
+shift $((OPTIND - 1)); echo "left over: $*"
+X
+;;
+8) cat <<'T'
+REDIRECTS, PIPES, HERE-DOCS
+cmd > f       overwrite     cmd >> f   append     cmd < f   read from f
+cmd 2> f      errors only   cmd > f 2>&1   both in one file   cmd 2>/dev/null   hide errors
+order matters: cmd > f 2>&1 is right, cmd 2>&1 > f is not
+cmd | cmd2    output of one becomes input of the next     tee f   copy to a file and the screen
+cat <<'X' ... X     literal text        cat <<X ... X    $vars and $(cmds) expand
+there is no here-string in plain sh:  printf '%s\n' "$v" | cmd
+$(cmd 2>&1)   capture errors too        >&2   write your own messages to stderr
+a pipe's status is the last command's status (no pipefail in plain sh)
+exercise: save only the error lines of  ls /nope /etc  into err.txt
+T
+cat > "$tmp/ex.sh" <<'X'
+t=$(mktemp)
+ls /nope /etc > "$t" 2>&1
+echo "both streams: $(wc -l < "$t") lines"
+ls /nope /etc 2> "$t" >/dev/null
+echo "only errors:"; cat "$t"
+echo "one" > "$t"; echo "two" >> "$t"; echo "file has: $(tr '\n' ' ' < "$t")"
+name=berber
+cat <<EOF
+expands: hello $name, today is $(date +%A)
+EOF
+cat <<'EOF'
+literal: hello $name
+EOF
+echo "to stderr" >&2
+rm -f "$t"
+X
+;;
+9) cat <<'T'
+TEXT TOOLS YOU WILL USE ALL THE TIME
+grep -i -v -n -c -q -E 'pat' file      find lines (ignore case, invert, numbers, count, quiet, regex)
+sed 's/old/new/g'   sed -n '5,10p'   sed '/x/d'     edit a stream, print a range, delete lines
+awk '{print $1}'   awk -F: '{print $1}'   awk '$3 > 1000'     pick columns, filter rows
+cut -d: -f1    tr a-z A-Z    sort -u    sort -rn    uniq -c    wc -l    head -n 3    tail -n 3
+find . -name '*.sh' -type f      files by name or type
+xargs        turn lines into arguments:  find . -name '*.tmp' | xargs rm   (careful with spaces)
+sed -i edits the file in place: keep a backup first
+pattern for "count how often": sort | uniq -c | sort -rn | head
+exercise: list the 5 biggest folders in /usr: du -s /usr/* | sort -rn | head -5
+T
+cat > "$tmp/ex.sh" <<'X'
+t=$(mktemp)
+printf 'berber 1000 sh\nroot 0 sh\nwww 33 nologin\nberber 1000 sh\n' > "$t"
+echo "grep root:";            grep root "$t"
+echo "column 1:";             awk '{print $1}' "$t"
+echo "uid over 10:";          awk '$2 > 10 {print $1, $2}' "$t"
+echo "swap sh for bash:";     sed 's/ sh$/ bash/' "$t"
+echo "count each name:";      awk '{print $1}' "$t" | sort | uniq -c | sort -rn
+echo "upper:";                echo "hello" | tr a-z A-Z
+rm -f "$t"
+X
+;;
+10) cat <<'T'
+SAFE SCRIPTS
+set -u            error on a variable that was never set (catches typos)
+set -e            stop at the first failing command. it has gotchas (inside if/&&/|| it is off)
+t=$(mktemp)       a safe temp file;   trap 'rm -f "$t"' EXIT   cleans up on exit and ctrl-c
+rm -rf "${dir:?}/x"    refuses to run when dir is empty. never write rm -rf "$dir/"
+check first:      [ -d "$d" ] || { echo "no $d"; exit 1; }
+tools:            command -v tool >/dev/null 2>&1 || { echo "need tool"; exit 1; }
+quote every path, folders can contain spaces
+root or sudo:     if [ "$(id -u)" -eq 0 ]; then SUDO=""; else SUDO=sudo; fi   (then: $SUDO cmd)
+ask before danger: printf 'sure? (y/n): '; read -r a; [ "$a" = y ] || exit 0
+never build a command from user input and eval it
+exercise: write to a temp file and delete it even when you press ctrl-c
+T
+cat > "$tmp/ex.sh" <<'X'
+t=$(mktemp)
+trap 'rm -f "$t"; echo "cleaned $t"' EXIT
+echo "working in $t"
+echo data > "$t"
+dir=""
+( : "${dir:?dir is empty, refusing}" ) 2>&1 | head -1
+if [ "$(id -u)" -eq 0 ]; then SUDO=""; else SUDO=sudo; fi
+echo "SUDO is: '${SUDO}'"
+X
+;;
+11) cat <<'T'
+DEBUGGING AND PORTABILITY
+sh -n file.sh     syntax check only, runs nothing
+sh -x file.sh     prints every command as it runs.   set -x ... set +x  does it for a part
+dash -n file.sh   the strictest check if dash is installed.  shellcheck file.sh (apk add shellcheck)
+echo "var=[$var]"  the oldest trick, still the best
+bash-only things that break in sh:
+  arrays   [[ ]]   <( )   echo -e   read -p -n -t   local   source   function f {}   $'..'   &>   ==
+plain sh replacements:
+  set --   [ ]   temp files   printf   printf then read -r   . file   f() { }   >f 2>&1   =
+shebang on line 1 is  #!/bin/sh   then chmod +x file.sh
+a script saved with windows line endings fails strangely:  sed -i 's/\r$//' file.sh
+if a script behaves differently from your terminal: PATH, working folder and quoting are the usual suspects
+exercise: run sh -x on a 3 line script and say what each trace line means
+T
+cat > "$tmp/ex.sh" <<'X'
+printf 'a=5\nb=$((a * 2))\necho "b is $b"\n' > "$HOME/.mfcore/tmp/three.sh"
+echo "--- sh -n (syntax only) ---"
+sh -n "$HOME/.mfcore/tmp/three.sh" && echo "syntax ok"
+echo "--- sh -x (trace) ---"
+sh -x "$HOME/.mfcore/tmp/three.sh"
+rm -f "$HOME/.mfcore/tmp/three.sh"
+X
+;;
+12) cat <<'T'
+SKELETON AND PRACTICE
+a script that behaves, in 20 lines (press t to save it to ~/new-script.sh):
+  shebang, SUDO line, a usage check, tool checks, a temp file with trap, a main function.
+practice, in this order, without looking at the notes:
+  1  a script that prints how big your home folder is and how much of the disk it uses
+  2  backup: copy a folder to /mnt/usb with the date in the name, refuse if /mnt/usb is missing
+  3  rename all *.JPG in a folder to lower case
+  4  read a file of names and print "hello NAME" for each (a while read loop)
+  5  take a folder as argument and report the 3 biggest files in it
+  6  add a new key to this script's main case that runs your function
+then read this script top to bottom and explain every line to yourself.
+T
+cat > "$tmp/ex.sh" <<'X'
+echo "nothing to run here, press t at the prompt to save the skeleton"
+X
+;;
+13) cat <<'T'
+READING LIST
+on this machine:   busybox sh --help   |   man dash (if installed)   |   man 1 test   |   man 1 find
+the standard:      https://pubs.opengroup.org/onlinepubs/9699919799/utilities/V3_chap02.html
+tricks for sh:     https://www.etalabs.net/sh_tricks.html
+every warning explained:  https://www.shellcheck.net/wiki/
+how to study this:
+  1  z1 to z12 in order, run every example, change one thing, run it again
+  2  do the exercise of each lesson without peeking
+  3  read wired top to bottom, find each lesson's idea in it
+  4  break something on purpose, read the error, fix it
+  5  rewrite one tool from this script in your own words
+T
+cat > "$tmp/ex.sh" <<'X'
+echo "tip: run  sh -x $HOME/wired and press one key to watch the whole script think"
+X
+;;
+14) cat <<'T'
+TOGGLE A SETTING IN A FILE (how the grub editor and devices work)
+find the line:          grep -n '^GRUB_TIMEOUT=' /etc/default/grub
+change it in place:     sed -i 's/^GRUB_TIMEOUT=.*/GRUB_TIMEOUT=1/' file      (copy the file first)
+turn a line OFF:        sed -i 's/^quiet=.*/#&/' file        (a # in front = off)
+turn it back ON:        sed -i 's/^#\(quiet=\)/\1/' file
+add it if missing:      grep -q '^quiet=' file || echo 'quiet=on' >> file
+root files:             printf '...' | sudo tee -a /etc/file   (sudo tee writes what sudo sh > file cannot)
+exercise: copy a file, toggle one line off and on with sed, diff the two
+T
+cat > "$tmp/ex.sh" <<'X'
+f=$HOME/.mfcore/tmp/toggle.conf
+printf 'mode=auto\n#power=off\n' > "$f"
+sed -i 's/^#\(power=\)/\1/; s/^power=.*/power=on/' "$f"
+echo "after on:";  cat "$f"
+sed -i 's/^power=.*/#power=off/' "$f"
+echo "after off:"; cat "$f"
+rm -f "$f"
+X
+;;
+esac
+echo ""
+lesson_run
+if [ "$1" = 12 ]; then
+printf 't save skeleton / enter back: '
+read -r lt
+if [ "$lt" = t ]; then
+cat > "$HOME/new-script.sh" <<'SKEL'
+#!/bin/sh
+# usage: new-script.sh FILE
+if [ "$(id -u)" -eq 0 ]; then SUDO=""; else SUDO="sudo"; fi
+need() { command -v "$1" >/dev/null 2>&1 || { echo "need $1"; exit 1; }; }
+need awk
+[ $# -ge 1 ] || { echo "usage: $0 FILE"; exit 1; }
+file=$1
+[ -f "$file" ] || { echo "no file: $file"; exit 1; }
+tmpf=$(mktemp)
+trap 'rm -f "$tmpf"' EXIT
+main() {
+  awk '{ n++ } END { print n " lines" }' "$file" > "$tmpf"
+  cat "$tmpf"
+}
+main
+SKEL
+chmod +x "$HOME/new-script.sh"
+echo "saved ~/new-script.sh"
+pause
+fi
+fi
+}
+
+# ---------- start ----------
+
+case "${1:-}" in
+"") ;;
+*) "$@"; exit $? ;;
+esac
+
+while true; do
+case "$screen" in
+more) show_more ;;
+old) show_old ;;
+tools) show_tools ;;
+build) show_build ;;
+learn) show_learn ;;
+dump) show_dump ;;
+*) show_menu ;;
+esac
+printf " "
+read -r choice || exit 0
+choice=$(printf '%s' "$choice" | tr -d '\r')
+case "$choice" in
+c|C) find_chmod_sh ;;
+f|F|1) fetch ;;
+l|L) laintop ;;
+r|R|8) chroot_shell ;;
+9) chroot_stop ;;
+s|S) shell ;;
+m|M) go more ;;
+o|O) go old ;;
+ee|EE) elevate ;;
+hz|HZ) horizon_run ;;
+mt|MT) chroot_app berber flatpak run space.bigrat.mocktail ;;
+u|U) update_system ;;
+t|T) text_color ;;
+w|W) wifi_restart ;;
+h|H) dashboard ;;
+x|X) sysutil ;;
+p|P) toggle_charge ;;
+e|E) mousepad "$SELF" & ;;
+ew|EW) editwm;;
+2) run wallpaper ;;
+3) run calc ;;
+4) run power ;;
+5) run readme ;;
+7) run matrix ;;
+2s) run wallpaperS ;;
+d|D) run diskhealth ;;
+n|N|i) nano "$SELF" ;;
+fm) run files ;;
+k) go tools ;;
+j) go build ;;
+ln) go learn ;;
+dp) go dump ;;
+bs) tl_bat_status ;;
+bon) tl_bat_on ;;
+boff) tl_bat_off ;;
+ryz) tl_ryzenadj_install ;;
+bp) tl_bat_params ;;
+grub) tl_grub ;;
+rec) tl_record ;;
+dk) tl_disk ;;
+dev) dev_menu ;;
+sv) save_on ;;
+svo) save_off ;;
+bh) boot_hook ;;
+kern) kern_prompt ;;
+kb) kern_build ;;
+dfix) disk_fix ;;
+opt) optimize; pause ;;
+cpu) cpu_gov ;;
+auto) autocpu ;;
+mpvc) mpv_conf ;;
+nc) tl_chroot_install ;;
+cs) tl_chroot_select ;;
+cb) tl_chroot_berber ;;
+snd) tl_chroot_sound ;;
+fpf) tl_fpf ;;
+fmt) fm_term ;;
+off) tl_shutdown ;;
+dock) tl_dockapps_big ;;
+dock2) tl_dockapps_small ;;
+mpvm) tl_mpv_meson ;;
+thumb) tl_thumbs ;;
+cfl) tl_cflags ;;
+aud) tl_audio ;;
+spk) tl_speaker ;;
+trn) tl_torrent ;;
+7x) tl_7x ;;
+bak) tl_backup ;;
+ssh) tl_sshfs ;;
+wmfix) tl_wmaker ;;
+ts) tl_tailscale ;;
+bw) tl_bwrap ;;
+mksh) tl_mksh ;;
+sx) tl_sxhkd ;;
+xr) tl_xbps_repo ;;
+wine) tl_xbps_wine ;;
+xpy) tl_xbps_py ;;
+ua) tl_useradd ;;
+own) tl_chown ;;
+vs) tl_visudo ;;
+fpk) tl_flatpak ;;
+scat) sudo_cat ;;
+ytdlp) d_ytdlp ;;
+nw) d_nw ;;
+mesa) d_mesa ;;
+glibc) d_glibc ;;
+prism) d_prism ;;
+fuse) d_fuse ;;
+tchown) d_torrentown ;;
+aports) d_aports ;;
+mc) mc_install ;;
+d1) tl_mpv_meson ;;
+d3) tl_dockapps_small ;;
+d4) d_glibc ;;
+d5) d_aports ;;
+d6) d_prism ;;
+d7) d_fuse ;;
+d8) d_torrentown ;;
+d9) tl_audio ;;
+d10) d_kicks ;;
+d12) d_ytdlp ;;
+d13) tl_chroot_install ;;
+z[1-9]|z1[0-4]) lesson "${choice#z}" ;;
+rf) run refresh ;;
+sc) run scrot ;;
+b|B) back ;;
+q|Q) exit 0 ;;
+*) ;;
+esac
+done
