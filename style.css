@@ -1,9 +1,6 @@
-html {
-  background: #000000;
-}
-
-body {
+html, body {
   margin: 0;
+  background: #000000;
   color: #ffffff;
   font-family: Arial, Helvetica, sans-serif;
 }
@@ -23,53 +20,56 @@ a, a:visited, a:hover {
   z-index: -1;
 }
 
-.sidebar {
-  position: fixed;
-  top: 0;
-  left: 0;
-  bottom: 0;
-  width: 180px;
-  overflow-y: auto;
-  background: #000000 url("sidebar.jpg") center top / cover no-repeat;
-  z-index: 1;
-}
-.sidebar a {
-  display: block;
-  padding: 8px 10px;
-  border-bottom: 1px solid #333333;
-  background: rgba(0, 0, 0, 0.55);
-  text-decoration: none;
-}
-
-.main {
-  margin-left: 180px;
-  padding: 0 20px 20px;
-  box-sizing: border-box;
-}
-
 .notice {
-  background: #222222;
-  padding: 4px 8px;
-  text-align: center;
+  background: #888888;
+  color: #ffffff;
   font-size: 11px;
+  text-align: center;
+  padding: 4px 8px;
+}
+
+.wrap {
+  width: 720px;
+  margin: 0 auto;
 }
 
 .nav {
   display: flex;
-  align-items: center;
-  height: 24px;
+  height: 20px;
   background: #111111;
-  margin: 0 -20px;
 }
 .nav a {
-  padding: 0 14px;
+  display: block;
   font-size: 13px;
-  line-height: 24px;
+  line-height: 20px;
+  padding: 0 14px;
+  text-decoration: none;
+}
+
+.row {
+  display: flex;
+  align-items: stretch;
+  min-height: 100vh;
+}
+
+.side {
+  width: 165px;
+  flex-shrink: 0;
+  background: #000000 url("sidebar.jpg") center top / cover no-repeat;
+}
+.side a {
+  display: block;
+  padding: 8px 10px;
+  border-bottom: 1px solid #333333;
+  background: rgba(0, 0, 0, 0.6);
   text-decoration: none;
 }
 
 .content {
-  padding: 20px;
+  flex: 1;
+  min-width: 0;
+  padding: 12px 20px;
+  box-sizing: border-box;
 }
 
 .downloads {
@@ -92,7 +92,7 @@ a, a:visited, a:hover {
 
 .gifs {
   text-align: center;
-  margin-top: 40px;
+  padding: 20px 0;
 }
 .gifs img {
   margin: 6px;
@@ -103,5 +103,5 @@ a, a:visited, a:hover {
   font-size: 11px;
   color: #888888;
   text-align: center;
-  margin-top: 20px;
+  padding: 10px 0 20px;
 }
