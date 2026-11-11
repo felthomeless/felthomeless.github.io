@@ -67,10 +67,6 @@ a, a:visited, a:hover {
   padding: 12px 20px;
 }
 
-section { display: none; }
-body:not(:has(section:target)) #home,
-section:target { display: block; }
-
 .downloads {
   list-style: none;
   padding: 0;
