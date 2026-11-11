@@ -16,7 +16,7 @@ a, a:visited, a:hover {
   transform: translate(-50%, -50%);
   width: min(100vw, calc(100vh * 4 / 3));
   height: min(100vh, calc(100vw * 3 / 4));
-  background: #000000 url("bg.jpg") center / cover no-repeat;
+  background: #000000 url("d.jpg") center / cover no-repeat;
   z-index: -1;
 }
 
@@ -55,7 +55,7 @@ a, a:visited, a:hover {
 .side {
   width: 165px;
   flex-shrink: 0;
-  background: #000000 url("sidebar.jpg") center top / cover no-repeat;
+  background: #000000 url("a.jpg") center top / cover no-repeat;
 }
 .side a {
   display: block;
