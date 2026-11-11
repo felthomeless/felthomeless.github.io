@@ -72,6 +72,20 @@ a, a:visited, a:hover {
   box-sizing: border-box;
 }
 
+/* pages: only the one linked (#home, #links, #software) is shown */
+.section {
+  display: none;
+}
+#home {
+  display: block;
+}
+body:has(.section:target) #home {
+  display: none;
+}
+.section:target {
+  display: block;
+}
+
 .downloads {
   list-style: none;
   padding: 0;
@@ -81,6 +95,7 @@ a, a:visited, a:hover {
   border-bottom: 1px solid #333333;
 }
 .downloads small {
+  display: block;
   color: #888888;
 }
 .preview {
