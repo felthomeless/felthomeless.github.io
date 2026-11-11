@@ -1,0 +1,107 @@
+html {
+  background: #000000;
+}
+
+body {
+  margin: 0;
+  color: #ffffff;
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+a, a:visited, a:hover {
+  color: #ff0000;
+}
+
+.bg-frame {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(100vw, calc(100vh * 4 / 3));
+  height: min(100vh, calc(100vw * 3 / 4));
+  background: #000000 url("bg.jpg") center / cover no-repeat;
+  z-index: -1;
+}
+
+.sidebar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: 180px;
+  overflow-y: auto;
+  background: #000000 url("sidebar.jpg") center top / cover no-repeat;
+  z-index: 1;
+}
+.sidebar a {
+  display: block;
+  padding: 8px 10px;
+  border-bottom: 1px solid #333333;
+  background: rgba(0, 0, 0, 0.55);
+  text-decoration: none;
+}
+
+.main {
+  margin-left: 180px;
+  padding: 0 20px 20px;
+  box-sizing: border-box;
+}
+
+.notice {
+  background: #222222;
+  padding: 4px 8px;
+  text-align: center;
+  font-size: 11px;
+}
+
+.nav {
+  display: flex;
+  align-items: center;
+  height: 24px;
+  background: #111111;
+  margin: 0 -20px;
+}
+.nav a {
+  padding: 0 14px;
+  font-size: 13px;
+  line-height: 24px;
+  text-decoration: none;
+}
+
+.content {
+  padding: 20px;
+}
+
+.downloads {
+  list-style: none;
+  padding: 0;
+}
+.downloads li {
+  padding: 10px 0;
+  border-bottom: 1px solid #333333;
+}
+.downloads small {
+  color: #888888;
+}
+.preview {
+  display: block;
+  max-width: 100%;
+  margin-top: 8px;
+  border: 1px solid #333333;
+}
+
+.gifs {
+  text-align: center;
+  margin-top: 40px;
+}
+.gifs img {
+  margin: 6px;
+  vertical-align: middle;
+}
+
+.footer {
+  font-size: 11px;
+  color: #888888;
+  text-align: center;
+  margin-top: 20px;
+}
