@@ -4,7 +4,120 @@
 <meta charset="utf-8">
 <title>fh</title>
 <link rel="icon" href="files/lain.ico">
-<link rel="stylesheet" href="style.css">
+<style>
+  html {
+    background: #000000;
+  }
+  body {
+    margin: 0;
+    color: #ffffff;
+    font-family: Arial, Helvetica, sans-serif;
+  }
+  a, a:visited, a:hover {
+    color: #ff0000;
+  }
+
+  .bg {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: min(100vw, calc(100vh * 4 / 3));
+    height: min(100vh, calc(100vw * 3 / 4));
+    background: url("d.jpg") center / cover no-repeat;
+    z-index: -1;
+  }
+
+  .notice {
+    background: #888888;
+    font-size: 11px;
+    text-align: center;
+    padding: 4px 8px;
+  }
+
+  .wrap {
+    width: 720px;
+    min-height: 100vh;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .nav {
+    display: flex;
+    background: #111111;
+  }
+  .nav .link {
+    font-size: 13px;
+    line-height: 20px;
+    padding: 0 14px;
+  }
+
+  .main {
+    display: flex;
+    flex: 1;
+  }
+
+  .side {
+    width: 165px;
+    flex-shrink: 0;
+    background: url("a.jpg") center top / cover no-repeat;
+  }
+  .side .link {
+    display: block;
+    padding: 8px 10px;
+    border-bottom: 1px solid #333333;
+    background: rgba(0, 0, 0, 0.6);
+  }
+
+  .content {
+    flex: 1;
+    min-width: 0;
+    padding: 12px 20px;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .link {
+    color: #ff0000;
+    cursor: pointer;
+  }
+
+  .downloads {
+    list-style: none;
+    padding: 0;
+  }
+  .downloads li {
+    padding: 10px 0;
+    border-bottom: 1px solid #333333;
+  }
+  .downloads small {
+    color: #888888;
+  }
+  .downloads img {
+    display: block;
+    max-width: 100%;
+    margin-top: 8px;
+    border: 1px solid #333333;
+  }
+
+  .gifs {
+    margin-top: auto;
+    text-align: center;
+    padding: 20px 0;
+  }
+  .gifs img {
+    margin: 6px;
+    vertical-align: middle;
+  }
+
+  .footer {
+    font-size: 11px;
+    color: #888888;
+    text-align: center;
+    padding: 10px 0 20px;
+  }
+</style>
 </head>
 <body>
 
@@ -20,51 +133,54 @@
     <span class="link" onclick="show('software')">software</span>
   </div>
 
-  <div class="side">
-    <span class="link" onclick="show('home')">home</span>
-    <span class="link" onclick="show('links')">links</span>
-    <span class="link" onclick="show('software')">software</span>
-  </div>
+  <div class="main">
 
-  <div class="content">
+    <div class="side">
+      <span class="link" onclick="show('home')">home</span>
+      <span class="link" onclick="show('links')">links</span>
+      <span class="link" onclick="show('software')">software</span>
+    </div>
 
-    <section id="home">
-      <h3>fh home</h3>
-    </section>
+    <div class="content">
 
-    <section id="links" hidden>
-      <h3>links</h3>
-    </section>
+      <section id="home">
+        <h3>fh home</h3>
+      </section>
 
-    <section id="software" hidden>
-      <h3>software</h3>
-      <ul class="downloads">
-        <li>
-          <a href="files/wired" download>wired sh</a> <small>(multitool shell file for linux)</small>
-          <img src="previews/wired.png" alt="">
-        </li>
-        <li>
-          <a href="files/wired.bat" download>wired bat</a> <small>(multitool batch file for windows)</small>
-          <img src="previews/wired.bat.png" alt="">
-        </li>
-        <li>
-          <a href="files/plainwm.c" download>plainwm c</a> <small>(windowmanager file for linux)</small>
-          <img src="previews/plainwm.png" alt="">
-        </li>
-        <li>
-          <a href="files/dots.zip" download>dotfiles c</a> <small>(dot files for linux)</small>
-          <img src="previews/dots.zip.png" alt="">
-        </li>
-        <li>
-          <span class="link" onclick="downloadBoth()">website files c</span> <small>(website sourcecode: index.html + style.css)</small>
-        </li>
-      </ul>
-    </section>
+      <section id="links" hidden>
+        <h3>links</h3>
+      </section>
 
-  </div>
+      <section id="software" hidden>
+        <h3>software</h3>
+        <ul class="downloads">
+          <li>
+            <a href="files/wired" download>wired sh</a> <small>(multitool shell file for linux)</small>
+            <img src="previews/wired.png" alt="">
+          </li>
+          <li>
+            <a href="files/wired.bat" download>wired bat</a> <small>(multitool batch file for windows)</small>
+            <img src="previews/wired.bat.png" alt="">
+          </li>
+          <li>
+            <a href="files/plainwm.c" download>plainwm c</a> <small>(windowmanager file for linux)</small>
+            <img src="previews/plainwm.png" alt="">
+          </li>
+          <li>
+            <a href="files/dots.zip" download>dotfiles c</a> <small>(dot files for linux)</small>
+            <img src="previews/dots.zip.png" alt="">
+          </li>
+          <li>
+            <a href="index.html" download>website files c</a> <small>(website source code)</small>
+          </li>
+        </ul>
+      </section>
 
-  <div class="gifs">
-    <img src="files/konata.gif" alt="">
+      <div class="gifs">
+        <img src="files/konata.gif" alt="">
+      </div>
+
+    </div>
   </div>
 
   <div class="footer">
@@ -78,17 +194,6 @@
 function show(id) {
   document.querySelectorAll("section").forEach(function (s) {
     s.hidden = s.id !== id;
-  });
-}
-
-function downloadBoth() {
-  ["index.html", "style.css"].forEach(function (f) {
-    var a = document.createElement("a");
-    a.href = f;
-    a.download = f;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
   });
 }
 </script>
