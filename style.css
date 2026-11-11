@@ -9,7 +9,7 @@ a, a:visited, a:hover {
   color: #ff0000;
 }
 
-.bg-frame {
+.bg {
   position: fixed;
   top: 50%;
   left: 50%;
@@ -22,7 +22,6 @@ a, a:visited, a:hover {
 
 .notice {
   background: #888888;
-  color: #ffffff;
   font-size: 11px;
   text-align: center;
   padding: 4px 8px;
@@ -35,11 +34,9 @@ a, a:visited, a:hover {
 
 .nav {
   display: flex;
-  height: 20px;
   background: #111111;
 }
 .nav a {
-  display: block;
   font-size: 13px;
   line-height: 20px;
   padding: 0 14px;
@@ -48,7 +45,6 @@ a, a:visited, a:hover {
 
 .row {
   display: flex;
-  align-items: stretch;
   min-height: 100vh;
 }
 
@@ -69,22 +65,11 @@ a, a:visited, a:hover {
   flex: 1;
   min-width: 0;
   padding: 12px 20px;
-  box-sizing: border-box;
 }
 
-/* pages: only the one linked (#home, #links, #software) is shown */
-.section {
-  display: none;
-}
-#home {
-  display: block;
-}
-body:has(.section:target) #home {
-  display: none;
-}
-.section:target {
-  display: block;
-}
+section { display: none; }
+body:not(:has(section:target)) #home,
+section:target { display: block; }
 
 .downloads {
   list-style: none;
@@ -95,10 +80,9 @@ body:has(.section:target) #home {
   border-bottom: 1px solid #333333;
 }
 .downloads small {
-  display: block;
   color: #888888;
 }
-.preview {
+.downloads img {
   display: block;
   max-width: 100%;
   margin-top: 8px;
